@@ -34,12 +34,13 @@ class Server(object):
         self.top_cnt = args.top_cnt
         self.auto_break = args.auto_break
         self.role = 'Server'
+        dataset_tag = getattr(args, "dataset_tag", args.dataset)
         if args.save_folder_name == 'temp':
-            args.save_folder_name_full = f'{args.save_folder_name}/{args.dataset}/{args.algorithm}/{time.time()}/'
+            args.save_folder_name_full = f'{args.save_folder_name}/{dataset_tag}/{args.algorithm}/{time.time()}/'
         elif 'temp' in args.save_folder_name:
             args.save_folder_name_full = args.save_folder_name
         else:
-            args.save_folder_name_full = f'{args.save_folder_name}/{args.dataset}/{args.algorithm}/'
+            args.save_folder_name_full = f'{args.save_folder_name}/{dataset_tag}/{args.algorithm}/'
         self.save_folder_name = args.save_folder_name_full
 
         self.clients = []
@@ -59,6 +60,8 @@ class Server(object):
         self.client_drop_rate = args.client_drop_rate
         self.train_slow_rate = args.train_slow_rate
         self.send_slow_rate = args.send_slow_rate
+        self.use_val = bool(getattr(args, "use_val", False))
+        self.use_bacc_metric = bool(getattr(args, "use_bacc_metric", False))
 
 
     def set_clients(self, clientObj):
@@ -143,13 +146,17 @@ class Server(object):
         
     def save_results(self):
         algo = self.dataset + "_" + self.algorithm
-        result_path = "../results/"
+        result_path = getattr(self.args, "results_dir", "../results")
+        result_path = os.fspath(result_path)
         if not os.path.exists(result_path):
             os.makedirs(result_path)
 
         if (len(self.rs_test_acc)):
             algo = algo + "_" + self.goal + "_" + str(self.times)
-            file_path = result_path + "{}.h5".format(algo)
+            file_path = os.path.join(result_path, "{}.h5".format(algo))
+            file_dir = os.path.dirname(file_path)
+            if file_dir and not os.path.exists(file_dir):
+                os.makedirs(file_dir)
             print("File path: " + file_path)
 
             with h5py.File(file_path, 'w') as hf:
@@ -164,19 +171,67 @@ class Server(object):
             except:
                 print('Already deleted.')
 
+    # def test_metrics(self):
+    #     num_samples = []
+    #     tot_correct = []
+    #     tot_auc = []
+    #     for c in self.clients:
+    #         ct, ns, auc = c.test_metrics()
+    #         tot_correct.append(ct*1.0)
+    #         print(f'Client {c.id}: Acc: {ct*1.0/ns}, AUC: {auc}')
+    #         tot_auc.append(auc*ns)
+    #         num_samples.append(ns)
+
+    #     ids = [c.id for c in self.clients]
+
+    #     return ids, num_samples, tot_correct, tot_auc
+
     def test_metrics(self):
+        num_samples = []
+        tot_auc = []
+
+        if self.use_bacc_metric:
+            tot_bacc = []
+            for c in self.clients:
+                bacc, ns, auc = c.test_metrics()
+                tot_bacc.append(bacc)  # per-client bacc
+                print(f'Client {c.id}: Acc (bacc): {bacc}, AUC: {auc}')
+                tot_auc.append(auc * ns)
+                num_samples.append(ns)
+            ids = [c.id for c in self.clients]
+            return ids, num_samples, tot_bacc, tot_auc
+        else:
+            tot_correct = []
+            for c in self.clients:
+                ct, ns, auc = c.test_metrics()
+                tot_correct.append(ct * 1.0)
+                print(f'Client {c.id}: Acc: {ct*1.0/ns}, AUC: {auc}')
+                tot_auc.append(auc * ns)
+                num_samples.append(ns)
+            ids = [c.id for c in self.clients]
+            return ids, num_samples, tot_correct, tot_auc
+
+    def val_metrics(self):
+        if not getattr(self, "use_val", False):
+            raise RuntimeError("Validation requested but use_val is False.")
         num_samples = []
         tot_correct = []
         tot_auc = []
+        tot_bacc = []
         for c in self.clients:
-            ct, ns, auc = c.test_metrics()
-            tot_correct.append(ct*1.0)
-            print(f'Client {c.id}: Acc: {ct*1.0/ns}, AUC: {auc}')
-            tot_auc.append(auc*ns)
-            num_samples.append(ns)
-
+            if self.use_bacc_metric:
+                bacc, ns, auc = c.val_metrics()
+                tot_bacc.append(bacc)
+                tot_auc.append(auc * ns)
+                num_samples.append(ns)
+            else:
+                ct, ns, auc = c.val_metrics()
+                tot_correct.append(ct * 1.0)
+                tot_auc.append(auc * ns)
+                num_samples.append(ns)
         ids = [c.id for c in self.clients]
-
+        if self.use_bacc_metric:
+            return ids, num_samples, tot_bacc, tot_auc
         return ids, num_samples, tot_correct, tot_auc
 
     def train_metrics(self):
@@ -192,33 +247,79 @@ class Server(object):
 
         return ids, num_samples, losses
 
-    # evaluate selected clients
     def evaluate(self, acc=None, loss=None):
         stats = self.test_metrics()
-        # stats_train = self.train_metrics()
+        # stats_train = self.train_metrics()  # keep commented if unused
 
-        test_acc = sum(stats[2])*1.0 / sum(stats[1])
-        test_auc = sum(stats[3])*1.0 / sum(stats[1])
-        # train_loss = sum(stats_train[2])*1.0 / sum(stats_train[1])
-        accs = [a / n for a, n in zip(stats[2], stats[1])]
+        # Test metrics
+        if self.use_bacc_metric:
+            per_client = stats[2]                     # list of per-client bacc
+            test_acc = float(np.nanmean(per_client)) if per_client else float('nan')
+            accs = per_client
+        else:
+            test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
+            accs = [a / n for a, n in zip(stats[2], stats[1])]
+        test_auc = sum(stats[3]) * 1.0 / sum(stats[1])
         aucs = [a / n for a, n in zip(stats[3], stats[1])]
-        
-        if acc == None:
+
+        # Persist test metric
+        if acc is None:
             self.rs_test_acc.append(test_acc)
         else:
             acc.append(test_acc)
-        
-        # if loss == None:
-        #     self.rs_train_loss.append(train_loss)
-        # else:
-        #     loss.append(train_loss)
 
-        # print("Averaged Train Loss: {:.4f}".format(train_loss))
-        print("Averaged Test Accuracy: {:.4f}".format(test_acc))
-        print("Averaged Test AUC: {:.4f}".format(test_auc))
-        # self.print_(test_acc, train_acc, train_loss)
-        print("Std Test Accuracy: {:.4f}".format(np.std(accs)))
-        print("Std Test AUC: {:.4f}".format(np.std(aucs)))
+        label = "Balanced Accuracy" if getattr(self, "use_bacc_metric", False) else "Accuracy"
+        print(f"Averaged Test {label}: {test_acc:.4f}")
+        print(f"Averaged Test AUC: {test_auc:.4f}")
+        print(f"Std Test {label}: {np.std(accs):.4f}")
+        print(f"Std Test AUC: {np.std(aucs):.4f}")
+
+        # Optional val metrics
+        if self.use_val:
+            stats_val = self.val_metrics()
+            if self.use_bacc_metric:
+                per_client_val = stats_val[2]         # list of per-client bacc
+                val_acc = float(np.nanmean(per_client_val)) if per_client_val else float('nan')
+                val_accs = per_client_val
+            else:
+                val_acc = sum(stats_val[2]) * 1.0 / sum(stats_val[1])
+                val_accs = [a / n for a, n in zip(stats_val[2], stats_val[1])]
+            val_auc = sum(stats_val[3]) * 1.0 / sum(stats_val[1])
+            val_aucs = [a / n for a, n in zip(stats_val[3], stats_val[1])]
+
+            print(f"Averaged Val {label}: {val_acc:.4f}")
+            print(f"Averaged Val AUC: {val_auc:.4f}")
+            print(f"Std Val {label}: {np.std(val_accs):.4f}")
+            print(f"Std Val AUC: {np.std(val_aucs):.4f}")
+
+
+    # # evaluate selected clients
+    # def evaluate(self, acc=None, loss=None):
+    #     stats = self.test_metrics()
+    #     # stats_train = self.train_metrics()
+
+    #     test_acc = sum(stats[2])*1.0 / sum(stats[1])
+    #     test_auc = sum(stats[3])*1.0 / sum(stats[1])
+    #     # train_loss = sum(stats_train[2])*1.0 / sum(stats_train[1])
+    #     accs = [a / n for a, n in zip(stats[2], stats[1])]
+    #     aucs = [a / n for a, n in zip(stats[3], stats[1])]
+        
+    #     if acc == None:
+    #         self.rs_test_acc.append(test_acc)
+    #     else:
+    #         acc.append(test_acc)
+        
+    #     # if loss == None:
+    #     #     self.rs_train_loss.append(train_loss)
+    #     # else:
+    #     #     loss.append(train_loss)
+
+    #     # print("Averaged Train Loss: {:.4f}".format(train_loss))
+    #     print("Averaged Test Accuracy: {:.4f}".format(test_acc))
+    #     print("Averaged Test AUC: {:.4f}".format(test_auc))
+    #     # self.print_(test_acc, train_acc, train_loss)
+    #     print("Std Test Accuracy: {:.4f}".format(np.std(accs)))
+    #     print("Std Test AUC: {:.4f}".format(np.std(aucs)))
 
     def print_(self, test_acc, test_auc, train_loss):
         print("Average Test Accuracy: {:.4f}".format(test_acc))

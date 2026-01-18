@@ -1,0 +1,14 @@
+base_configs:
+  # Defaults / common settings
+  base_split_mode: split_train
+  base_split_seed: 123
+  base_es_metric: val_loss    # options: val_loss | val_acc | val_bacc | val_temp_scaled_loss | cdsc
+  base_es_patience: 20
+  base_weighted_by_class: true
+  base_es_min_delta: 0.0001
+
+  # Search space for base training (cartesian product)
+  sweep:
+    base_es_metric: [val_loss, val_temp_scaled_loss]
+    base_clf_lr: [0.0005, 0.0001, 0.001]
+    # add more base_* params here if needed

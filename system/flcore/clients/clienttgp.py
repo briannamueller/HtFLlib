@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 import time
+from sklearn.preprocessing import label_binarize
+from sklearn import metrics
 from flcore.clients.clientbase import Client, load_item, save_item
 from collections import defaultdict
 
@@ -93,31 +95,66 @@ class clientTGP(Client):
         global_protos = load_item('Server', 'global_protos', self.save_folder_name)
         model.eval()
 
+        if global_protos is None:
+            return super().test_metrics()
+
         test_acc = 0
         test_num = 0
+        y_prob = []
+        y_true = []
+        preds_all = []
+        targets_all = []
+        with torch.no_grad():
+            for x, y in testloader:
+                if type(x) == type([]):
+                    x[0] = x[0].to(self.device)
+                else:
+                    x = x.to(self.device)
+                y = y.to(self.device)
+                rep = model.base(x)
 
-        if global_protos is not None:
-            with torch.no_grad():
-                for x, y in testloader:
-                    if type(x) == type([]):
-                        x[0] = x[0].to(self.device)
-                    else:
-                        x = x.to(self.device)
-                    y = y.to(self.device)
-                    rep = model.base(x)
+                output = float('inf') * torch.ones(y.shape[0], self.num_classes).to(self.device)
+                for i, r in enumerate(rep):
+                    for j, pro in global_protos.items():
+                        if type(pro) != type([]):
+                            output[i, j] = self.loss_mse(r, pro)
 
-                    output = float('inf') * torch.ones(y.shape[0], self.num_classes).to(self.device)
-                    for i, r in enumerate(rep):
-                        for j, pro in global_protos.items():
-                            if type(pro) != type([]):
-                                output[i, j] = self.loss_mse(r, pro)
+                preds_batch = torch.argmin(output, dim=1)
+                test_acc += (preds_batch == y).sum().item()
+                test_num += y.shape[0]
+                if self.use_bacc_metric:
+                    preds_all.append(preds_batch.detach().cpu().numpy())
+                    targets_all.append(y.detach().cpu().numpy())
 
-                    test_acc += (torch.sum(torch.argmin(output, dim=1) == y)).item()
-                    test_num += y.shape[0]
+                scores = (-output).detach().cpu().numpy()
+                y_prob.append(scores)
+                nc = self.num_classes
+                if self.num_classes == 2:
+                    nc += 1
+                lb = label_binarize(y.detach().cpu().numpy(), classes=np.arange(nc))
+                if self.num_classes == 2:
+                    lb = lb[:, :2]
+                y_true.append(lb)
 
-            return test_acc, test_num, 0
-        else:
-            return 0, 1e-5, 0
+        if test_num == 0:
+            return (float("nan") if self.use_bacc_metric else 0.0), 0, float("nan")
+
+        y_prob = np.concatenate(y_prob, axis=0) if y_prob else np.array([])
+        y_true = np.concatenate(y_true, axis=0) if y_true else np.array([])
+        try:
+            auc = metrics.roc_auc_score(y_true, y_prob, average='micro')
+        except ValueError:
+            auc = float("nan")
+
+        if self.use_bacc_metric:
+            if len(preds_all) == 0:
+                return float("nan"), test_num, auc
+            preds_cat = np.concatenate(preds_all, axis=0)
+            targets_cat = np.concatenate(targets_all, axis=0)
+            bacc = metrics.balanced_accuracy_score(targets_cat, preds_cat)
+            return bacc, test_num, auc
+
+        return test_acc, test_num, auc
 
     def train_metrics(self):
         trainloader = self.load_train_data()

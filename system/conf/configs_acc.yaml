@@ -1,0 +1,57 @@
+base_configs:
+  # Defaults / common settings
+  base_split_mode: split_train
+  base_split_seed: 123
+  base_es_metric: val_loss    # options: val_loss | val_acc | val_bacc | val_temp_scaled_loss | cdsc
+  base_es_patience: 20
+  base_weighted_by_class: true
+  base_es_min_delta: 0.0001
+
+  # Search space for base training (cartesian product)
+  sweep:
+    base_es_metric: [val_loss] #  val_temp_scaled_loss
+    base_clf_lr: [0.001] # [0.0001, 0.0003, 0.0005, 0.001]
+    # add more base_* params here if needed
+
+
+graph_configs:
+  # Defaults / common settings
+  graph_k_per_class: 5
+  graph_cs_topk: 3
+  graph_cc_topk: 3
+  graph_sample_node_feats: embedding_mean   # options: ds | embedding_mean | embedding_concat
+
+  # Search space for graph construction (cartesian product)
+  sweep:
+    graph_k_per_class: [7]
+    graph_cs_topk: [5]
+    graph_cc_topk: [3]
+    graph_sample_node_feats: [embedding_mean] # encoder  # extend if you want other feature modes
+
+
+gnn_configs:
+  # Defaults / common settings
+  gnn_hidden_dim: 128
+  gnn_layers: 2
+  gnn_heads: 4
+  gnn_dropout: 0.2
+  gnn_lr: 0.0005
+  gnn_weight_decay: 0.0001
+  gnn_use_sample_residual: false
+  gnn_bidirectionality: true
+  gnn_es_metric: val_loss   # options: val_loss | val_micro_prec | val_micro_f1 | val_bacc
+  gnn_patience: 20
+  gnn_sample_weight_mode: class_prevalence
+  gnn_ens_combination_mode: hard   # options: soft | hard
+  gnn_drop_cc_edges: false
+
+  # Search space for GNN/meta (cartesian product)
+  sweep:
+    gnn_hidden_dim: [64, 128, 256]
+    gnn_heads: [2, 4]
+    gnn_lr: [0.0005, 0.0001, 0.001]
+    gnn_use_sample_residual: [false, true]
+    gnn_bidirectionality: [true]
+    gnn_es_metric: [val_loss, val_micro_prec, val_bcc]
+    gnn_sample_weight_mode: [difficulty, class_prevalence]
+    gnn_ens_combination_mode: [hard]
