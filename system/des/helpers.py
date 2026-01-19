@@ -9,7 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, random_split
+from sklearn.model_selection import KFold
 from utils.data_utils import read_client_data
 from typing import Iterable
 
@@ -155,6 +156,50 @@ def init_base_meta_loaders(client: Any) -> Tuple[DataLoader, DataLoader]:
         worker_init_fn=worker_init, generator=gen,
     )
     return client._base_train_loader, client._meta_train_loader
+
+
+def get_kfold_loaders(
+    client: Any,
+    n_splits: int = 5,
+    seed: int = 42,
+) -> List[Tuple[DataLoader, DataLoader, np.ndarray]]:
+    """
+    Build deterministic K-fold (train_loader, val_loader, val_idx) tuples
+    over the full local training set. Val loaders do NOT shuffle.
+    """
+    full_train_loader = client.load_train_data(batch_size=client.batch_size)
+    dataset = full_train_loader.dataset
+
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    indices = np.arange(len(dataset))
+
+    loaders = []
+    for train_idx, val_idx in kf.split(indices):
+        train_subset = Subset(dataset, train_idx)
+        val_subset = Subset(dataset, val_idx)
+
+        worker_init = lambda wid: np.random.seed(seed + wid)
+        gen = torch.Generator().manual_seed(seed)
+
+        train_loader = DataLoader(
+            train_subset,
+            batch_size=client.batch_size,
+            shuffle=True,
+            drop_last=True,
+            worker_init_fn=worker_init,
+            generator=gen,
+        )
+        val_loader = DataLoader(
+            val_subset,
+            batch_size=client.batch_size,
+            shuffle=False,
+            drop_last=False,
+            worker_init_fn=worker_init,
+            generator=gen,
+        )
+        loaders.append((train_loader, val_loader, val_idx))
+
+    return loaders
 
 
 def build_dataset_partition_id(

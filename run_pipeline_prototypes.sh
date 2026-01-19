@@ -60,17 +60,36 @@ EXP_FAMILY="${EXP_FAMILY:-${exp_family:-Cifar10}}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 PYTHONPATH="${PYTHONPATH:-}:${REPO_ROOT}:${REPO_ROOT}/system"
 export PYTHONPATH
-CONFIGS_YAML="${CONFIGS_YAML:-${REPO_ROOT}/system/conf/configs.yaml}"
+CONFIGS_YAML="${CONFIGS_YAML:-${REPO_ROOT}/system/conf/configs_prototypes.yaml}"
 MAKE_PHASE_CONFIGS="${MAKE_PHASE_CONFIGS:-${REPO_ROOT}/make_phase_configs.py}"
-WORKER_SH="${WORKER_SH:-${REPO_ROOT}/worker.sh}"
+WORKER_SH="${WORKER_SH:-${REPO_ROOT}/worker_prototypes.sh}"
 
-RUNS_ROOT="${RUNS_ROOT:-${REPO_ROOT}/run_configs}"
+RUNS_ROOT="${RUNS_ROOT:-${REPO_ROOT}/run_configs_prototypes}"
 STAMP="${STAMP:-$(date +%Y%m%dT%H%M%S)}"
-RUN_DIR="${RUN_DIR:-${RUNS_ROOT}/${EXP_FAMILY}_${STAMP}}"
+RUN_DIR="${RUN_DIR:-${RUNS_ROOT}/${EXP_FAMILY}_prototypes_${STAMP}}"
 LOG_DIR="${LOG_DIR:-${RUN_DIR}/logs}"
 
 JOBS_TSV="${RUN_DIR}/sge_jobs.tsv"
 SWEEPS_TSV="${RUN_DIR}/wandb_sweeps.tsv"
+
+ALLOW_NONPROT_CONFIGS="${ALLOW_NONPROT_CONFIGS:-0}"
+if [[ "${ALLOW_NONPROT_CONFIGS}" -ne 1 ]]; then
+  if [[ "${CONFIGS_YAML}" != *"configs_prototypes.yaml" ]]; then
+    echo "[ERROR] CONFIGS_YAML must point to configs_prototypes.yaml for prototype runs."
+    echo "[ERROR] CONFIGS_YAML=${CONFIGS_YAML}"
+    exit 2
+  fi
+  if [[ "${RUN_DIR}" != *"_prototypes_"* ]]; then
+    echo "[ERROR] RUN_DIR must include '_prototypes_' for prototype runs."
+    echo "[ERROR] RUN_DIR=${RUN_DIR}"
+    exit 2
+  fi
+  if [[ "${WORKER_SH}" != *"worker_prototypes.sh" ]]; then
+    echo "[ERROR] WORKER_SH must point to worker_prototypes.sh for prototype runs."
+    echo "[ERROR] WORKER_SH=${WORKER_SH}"
+    exit 2
+  fi
+fi
 
 # Cluster defaults (override-able)
 queue="${queue:-UI-GPU,MANSCI-GPU,COB-GPU}"
@@ -87,7 +106,7 @@ smp="${smp:-5}"
 base_tc="${base_tc:-100}"
 graph_tc="${graph_tc:-20}"
 meta_tc="${meta_tc:-1}"
-MAX_META_JOBS="${MAX_META_JOBS:-16}"           # 0 => unlimited
+MAX_META_JOBS="${MAX_META_JOBS:-5}"           # 0 => unlimited
 META_CHECK_INTERVAL="${META_CHECK_INTERVAL:-60}"  # seconds between qstat poll
 
 # Meta modes
@@ -311,20 +330,42 @@ fi
 NC="${NC:-${pipeline_defaults_nc}}"
 NUM_MODELS="${NUM_MODELS:-${pipeline_defaults_num_models}}"
 ckpt_partition="${DATASET_PARTITION:+/${DATASET_PARTITION}}"
-ckpt_root="${ckpt_root:-/Shared/lss_brimueller/${EXP_FAMILY}${ckpt_partition}}"
+ckpt_root="${ckpt_root:-/Shared/lss_brimueller/${EXP_FAMILY}${ckpt_partition}_prototypes}"
 export ckpt_root
 outputs_root="${outputs_root:-${ckpt_root}}"
 export outputs_root
 
+# Optional: reuse base classifiers from a non-prototype run to avoid retraining.
+REUSE_BASE="${REUSE_BASE:-1}"
+ORIG_CKPT_ROOT="${ORIG_CKPT_ROOT:-/Shared/lss_brimueller/${EXP_FAMILY}${ckpt_partition}}"
+if [[ "${REUSE_BASE}" -eq 1 ]]; then
+  if [[ -d "${ORIG_CKPT_ROOT}/base_clf" ]]; then
+    mkdir -p "${ckpt_root}"
+    cp -a "${ORIG_CKPT_ROOT}/base_clf" "${ckpt_root}/"
+    echo "[submit_all] Reused base classifiers from ${ORIG_CKPT_ROOT}/base_clf"
+  else
+    echo "[submit_all] REUSE_BASE=1 but ${ORIG_CKPT_ROOT}/base_clf not found; will train base classifiers."
+  fi
+fi
+
 if [[ -z "${WANDB_PROJECT:-}" ]]; then
   if [[ -n "${DATASET_PARTITION:-}" ]]; then
-    WANDB_PROJECT="${EXP_FAMILY}_${DATASET_PARTITION}"
+    WANDB_PROJECT="${EXP_FAMILY}_${DATASET_PARTITION}_prototypes"
   else
-    WANDB_PROJECT="${EXP_FAMILY}"
+    WANDB_PROJECT="${EXP_FAMILY}_prototypes"
   fi
   WANDB_PROJECT="${WANDB_PROJECT}_${PIPELINE_ALGO}"
 fi
 export WANDB_PROJECT
+
+ALLOW_NONPROT_WANDB="${ALLOW_NONPROT_WANDB:-0}"
+if [[ "${ALLOW_NONPROT_WANDB}" -ne 1 ]]; then
+  if [[ "${WANDB_PROJECT}" != *"_prototypes"* ]]; then
+    echo "[ERROR] WANDB_PROJECT must include '_prototypes' for prototype runs."
+    echo "[ERROR] WANDB_PROJECT=${WANDB_PROJECT}"
+    exit 2
+  fi
+fi
 
 make_phase_extra_args=""
 if [[ "${single_default_configs}" -eq 1 ]]; then
@@ -589,7 +630,7 @@ command_str = " ".join([
     "&&",
     f"cd {REPO_ROOT}/system",
     "&&",
-    "python main.py",
+    "python main_prototypes.py",
     common_args,
     base_args,
     graph_args,
@@ -742,4 +783,4 @@ echo "[submit_all] Logs: ${LOG_DIR}"
 echo "[submit_all] Job list: ${JOBS_TSV}"
 echo "[submit_all] Sweep list: ${SWEEPS_TSV}"
 echo "[submit_all] Cancel this run:"
-echo "  ACTION=cancel RUN_DIR=${RUN_DIR} bash run_pipeline.sh"
+echo "  ACTION=cancel RUN_DIR=${RUN_DIR} bash run_pipeline_prototypes.sh"

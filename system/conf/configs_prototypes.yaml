@@ -52,7 +52,7 @@ base_configs:
   sweep:
     base_es_metric: [val_temp_scaled_loss] #  val_temp_scaled_loss
     base_clf_lr: [0.0005] # [0.0001, 0.0003, 0.0005, 0.001]
-    base_single_model: [false, true]  # extend if you want to try both single and multi model settings
+    base_single_model: [false]  # extend if you want to try both single and multi model settings
     # add more base_* params here if needed
 
 
@@ -64,20 +64,19 @@ graph_configs:
   graph_cc_topk: 3
   graph_sample_node_feats: embedding_mean   # options: ds | embedding_mean | embedding_concat
   graph_cs_mode: balanced_acc:logloss       # format: score:tie (tie can be none)
-  graph_drop_disconnected_cls: false
-  proto_use: false
+  proto_use: true
   proto_min_samples: 5
   proto_max_k: 100
 
   # Search space for graph construction (cartesian product)
   sweep:
     graph_k_per_class: [5]
-    graph_cs_topk: [5]
+    graph_cs_topk: [0]
     graph_cc_topk: [5]
     graph_meta_min_pos: [1]
-    graph_sample_node_feats: [encoder, embedding_mean] # encoder  # extend if you want other feature modes
-    graph_cs_mode: [gain:balanced_acc]
-    proto_use: [false]
+    graph_sample_node_feats: [embedding_mean] # encoder  # extend if you want other feature modes
+    graph_cs_mode: [gain:logloss]
+    proto_use: [true]
 
 
 gnn_configs:
@@ -90,15 +89,13 @@ gnn_configs:
   gnn_lr: 0.0005
   gnn_weight_decay: 0.0001
   gnn_use_sample_residual: false
-  gnn_sample_feat_norm: none   # options: none | layernorm | l2
-  gnn_debug_feat_stats: true
-  gnn_debug_degrees: true
   gnn_bidirectionality: true
   gnn_drop_cc_edges: false
   gnn_es_metric: val_loss   # options: val_loss | val_micro_prec | val_micro_f1 | val_bacc
   gnn_patience: 50
   gnn_sample_weight_mode: class_prevalence
   gnn_ens_combination_mode: hard   # options: soft | hard | voting
+  gnn_pair_decoder: none
   gnn_learned_cc_attrs: false
   gnn_learned_cc_attr_dim: 64
   gnn_diversity_regularization: true
@@ -114,27 +111,28 @@ gnn_configs:
 
   # Search space for GNN/meta (cartesian product)
   sweep:
-    gnn_heterogenous: [true, false]
+    gnn_heterogenous: [true]
     gnn_hidden_dim: [256, 512]
     gnn_heads: [4, 8]
     gnn_layers: [2]
-    gnn_lr: [0.005]
+    gnn_lr: [0.001]
     gnn_use_sample_residual: [true]
     gnn_bidirectionality: [true]
     gnn_diversity_regularization: [false]
-    gnn_es_metric: [val_loss]
-    gnn_sample_weight_mode: [difficulty]
+    gnn_es_metric: [val_loss, val_acc]
+    gnn_sample_weight_mode: [difficulty, class_prevalence]
     gnn_ens_combination_mode: [weighted_vote]
     gnn_loss: [meta_labels]
     gnn_rank_lambda: [0, 0.5]
-    gnn_rank_margin: [0.9]
-    gnn_rank_max_pairs: [512]
+    gnn_rank_margin: [0.5]
+    gnn_rank_max_pairs: [256]
     gnn_rank_sample_n: [512]
     gnn_use_pos_weight: [false]
-    gnn_weight_rank_loss: [false]
-    gnn_use_edge_attr: [true]
-    gnn_sampler: [unweighted]
-    gnn_patience: [20]
+    gnn_weight_rank_loss: [true, false]
+    gnn_use_edge_attr: [true, false]
+    gnn_sampler: [weighted, unweighted]
+    gnn_patience: [50]
+    gnn_pair_decoder: [none]
 
   conditional_sweep:
     - when:
@@ -145,15 +143,15 @@ gnn_configs:
         gnn_learned_cc_attrs: false
         gnn_update_classifier_nodes: false
       sweep:
-        gnn_arch: [gatv3]
+        gnn_arch: [gat, gatv3]
     - when:
         gnn_heterogenous: true
       sweep:
-        gnn_arch: [hetero_gatv3]
+        gnn_arch: [hetero_gat]
         gnn_drop_cc_edges: [true]
         gnn_pair_decoder: [none]
-        gnn_learned_cc_attrs: [true, false]
-        gnn_update_classifier_nodes: [true, false]
+        gnn_learned_cc_attrs: [false]
+        gnn_update_classifier_nodes: [false]
 
 pae_configs:
   # Defaults / common settings

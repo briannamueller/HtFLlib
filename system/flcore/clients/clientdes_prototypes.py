@@ -21,15 +21,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from entmax import entmax_bisect, sparsemax
 from sklearn.metrics import precision_score, f1_score
-from torch_geometric.utils import degree
 # Shared training helpers
 
 # ---------- DES utilities ----------
 from des.dataset_stats import load_client_label_counts
-from des.graph_utils import build_train_eval_graph, compute_meta_labels, project_to_DS, generate_prototypes
+from des.graph_utils_prototypes import build_train_eval_graph, project_to_DS, generate_prototypes
 from des.base_clf_utils import fit_clf
-from des.helpers import derive_config_ids, init_base_meta_loaders, get_kfold_loaders, get_performance_baselines
-from des.meta_learner_utils import (
+from des.helpers import derive_config_ids, init_base_meta_loaders, get_performance_baselines
+from des.meta_learner_utils_prototypes import (
     build_meta_learner,
     compute_sample_weights,
     enforce_bidirectionality,
@@ -92,7 +91,7 @@ def _plot_phase3_scatter(
     plt.savefig(out_path, dpi=150)
     plt.close()
 
-class clientDES(Client):
+class clientDESPrototypes(Client):
     """
     Skeleton FedDES client.
 
@@ -209,16 +208,11 @@ class clientDES(Client):
 
     def train_base_classifiers(self, device=None):
         device = torch.device(device if device is not None else self.device)
-        split_mode = str(getattr(self.args, "base_split_mode", "split_train")).lower()
-        if split_mode == "oof_stacking":
-            self._train_oof_stacking(device)
-            return
-
         base_train_loader, _ = init_base_meta_loaders(self)
         val_loader = self.load_val_data()
 
         for model_id, model_str in zip(self.model_ids, self.model_strs):
-            best_epoch, best_score, model = fit_clf(
+            best_epoch, best_score, model= fit_clf(
                 self,
                 model_id, base_train_loader, val_loader, device,
                 max_epochs=self.args.local_epochs,
@@ -228,111 +222,8 @@ class clientDES(Client):
                 min_delta=self.args.base_es_min_delta,
             )
 
-            torch.save(model.cpu(), self.base_dir / f"{self.role}_{model_str}.pt")
+            torch.save(model.cpu(), self.base_dir /f"{self.role}_{model_str}.pt")
             print(f"{self.role} {model_id} stopping training at epoch {best_epoch}, score = {best_score}")
-
-    def _train_oof_stacking(self, device):
-        n_folds = int(getattr(self.args, "base_oof_folds", 5))
-        seed = int(getattr(self.args, "base_split_seed", 0))
-        folds = get_kfold_loaders(self, n_splits=n_folds, seed=seed)
-
-        full_train_loader = self.load_train_data(batch_size=self.batch_size)
-        n_total = len(full_train_loader.dataset)
-        num_classes = int(getattr(self.args, "num_classes", 1))
-
-        local_keys = [(self.role, model_str) for model_str in self.model_strs]
-        global_keys = list(self.global_clf_keys)
-        local_indices = [global_keys.index(k) for k in local_keys if k in global_keys]
-        if len(local_indices) != len(local_keys):
-            print(
-                f"[FedDES][Client {self.role}][warn] local classifier keys not found in global keys "
-                f"({len(local_indices)}/{len(local_keys)})."
-            )
-
-        oof_probs = torch.zeros((n_total, len(local_keys), num_classes), dtype=torch.float32)
-        oof_preds = torch.zeros((n_total, len(local_keys)), dtype=torch.long)
-        oof_labels = torch.full((n_total,), -1, dtype=torch.long)
-
-        for fold_idx, (train_loader, val_loader, val_idx) in enumerate(folds, start=1):
-            print(f"[FedDES][Client {self.role}] OOF fold {fold_idx}/{n_folds}")
-
-            fold_pool = {}
-            for model_id, model_str in zip(self.model_ids, self.model_strs):
-                _, _, model = fit_clf(
-                    self,
-                    model_id,
-                    train_loader,
-                    val_loader,
-                    device,
-                    max_epochs=self.args.local_epochs,
-                    patience=self.args.base_es_patience,
-                    es_metric=self.args.base_es_metric,
-                    lr=self.args.base_clf_lr,
-                    min_delta=self.args.base_es_min_delta,
-                )
-                fold_pool[(self.role, model_str)] = model
-
-            prev_keys = self.global_clf_keys
-            self.global_clf_keys = local_keys
-            try:
-                ds, preds, y_true, meta_labels, feats = project_to_DS(
-                    self, val_loader, fold_pool, calibrate_probs=False
-                )
-            finally:
-                self.global_clf_keys = prev_keys
-
-            probs = ds.view(ds.size(0), len(local_keys), num_classes)
-            val_idx = np.asarray(val_idx, dtype=np.int64)
-            if probs.size(0) != val_idx.shape[0]:
-                raise RuntimeError(
-                    f"OOF fold size mismatch: probs={probs.size(0)} val_idx={val_idx.shape[0]}"
-                )
-
-            oof_probs[val_idx] = probs.detach().cpu()
-            oof_preds[val_idx] = preds.detach().cpu()
-            oof_labels[val_idx] = y_true.detach().cpu()
-
-        if bool((oof_labels < 0).any().item()):
-            missing = int((oof_labels < 0).sum().item())
-            raise RuntimeError(
-                f"OOF stacking failed to populate {missing} labels. Check fold indices."
-            )
-
-        oof_meta = compute_meta_labels(
-            oof_probs,
-            oof_preds,
-            oof_labels,
-            min_positive=int(getattr(self.args, "graph_meta_min_pos", 3)),
-        )
-
-        oof_cache = {
-            "probs": oof_probs.cpu(),
-            "preds": oof_preds.cpu(),
-            "meta": oof_meta.cpu(),
-            "y": oof_labels.cpu(),
-            "local_clf_keys": local_keys,
-            "local_clf_indices": local_indices,
-        }
-        oof_path = self.base_dir / f"{self.role}_oof_cache.pt"
-        torch.save(oof_cache, oof_path)
-        print(f"[FedDES][Client {self.role}] OOF cache saved to {oof_path}")
-
-        print(f"[FedDES][Client {self.role}] Retraining final models on 100% data...")
-        real_val_loader = self.load_val_data()
-        for model_id, model_str in zip(self.model_ids, self.model_strs):
-            _, _, model = fit_clf(
-                self,
-                model_id,
-                full_train_loader,
-                real_val_loader,
-                device,
-                max_epochs=self.args.local_epochs,
-                patience=self.args.base_es_patience,
-                es_metric=self.args.base_es_metric,
-                lr=self.args.base_clf_lr,
-                min_delta=self.args.base_es_min_delta,
-            )
-            torch.save(model.cpu(), self.base_dir / f"{self.role}_{model_str}.pt")
         
     def prepare_graph_data(self, device=None, classifier_pool: Dict[Any, torch.nn.Module] = None) -> None:
             """
@@ -356,9 +247,6 @@ class clientDES(Client):
 
             # Flat cache for graph inputs
             cache_path = (Path(self.base_dir)/ f"{self.role}_graph_bundle.pt")
-            oof_cache_path = self.base_dir / f"{self.role}_oof_cache.pt"
-            split_mode = str(getattr(self.args, "base_split_mode", "split_train")).lower()
-            use_oof = split_mode == "oof_stacking" and oof_cache_path.exists()
             
             # Check flag for prototype generation
             generate_protos = getattr(self.args, "proto_use", False)
@@ -384,12 +272,7 @@ class clientDES(Client):
 
             else:
                 graph_data = {}
-                splits_to_run = ["train", "val", "test"]
-                if use_oof:
-                    splits_to_run = ["val", "test"]
-                    print(f"[FedDES][Client {self.role}] Using OOF cache for train split.")
-
-                for data_split in splits_to_run:
+                for data_split in ["train", "val", "test"]:
                     loader = data_loaders[data_split]
                     ds, preds, y_true, meta_labels, feats = project_to_DS(
                         self, loader, classifier_pool
@@ -397,17 +280,6 @@ class clientDES(Client):
                     graph_data[data_split] = {
                         "ds": ds, "preds": preds, "y": y_true, "meta": meta_labels.float(), "feats": feats
                     }
-
-                if use_oof:
-                    oof_cache = torch.load(oof_cache_path, map_location="cpu")
-                    train_loader = self.load_train_data(batch_size=self.batch_size)
-                    ds, preds, y_true, meta_labels, feats = project_to_DS(
-                        self, train_loader, classifier_pool
-                    )
-                    graph_data["train"] = {
-                        "ds": ds, "preds": preds, "y": y_true, "meta": meta_labels.float(), "feats": feats
-                    }
-                    self._apply_oof_to_train_graph_data(graph_data["train"], oof_cache)
                 
                 # Generate prototypes if requested (using Training data)
                 if generate_protos:
@@ -452,8 +324,22 @@ class clientDES(Client):
             # Glob all bundles in the shared folder (e.g., client0_.., client1_..)
             # This simulates the client having access to the "Global Prototype Registry"
             proto_id = self._proto_config_id()
-            all_proto_files = list(Path(self.base_dir).glob(f"*_prototypes[{proto_id}].pt"))
+            suffix = f"_prototypes[{proto_id}].pt"
+            all_proto_files = [
+                p for p in Path(self.base_dir).iterdir()
+                if p.is_file() and p.name.endswith(suffix)
+            ]
             
+            print(f"[FedDES][Client {self.role}] proto_id={proto_id}")
+            print(f"[FedDES][Client {self.role}] proto_glob_dir={self.base_dir}")
+            print(f"[FedDES][Client {self.role}] proto_glob_suffix={suffix}")
+            if not all_proto_files:
+                try:
+                    present = sorted(p.name for p in Path(self.base_dir).iterdir() if p.is_file())
+                except Exception:
+                    present = []
+                print(f"[FedDES][Client {self.role}] proto_glob_dir_files={present}")
+
             print(f"[FedDES][Client {self.role}] Loading prototypes from {len(all_proto_files)} peer files...")
             
             for proto_path in all_proto_files:
@@ -473,19 +359,6 @@ class clientDES(Client):
             tr.ds,   tr.preds,   tr.meta,   tr.y,   tr.feats,
             test.ds, test.y, test.feats, eval_type="test", prototypes=peer_prototypes
         )
-
-        if bool(getattr(self.args, "graph_drop_disconnected_cls", False)):
-            self._drop_disconnected_classifiers(train_val_graph, train_test_graph, (tr, val, test))
-            graph_data["train"]["meta"] = tr.meta
-            graph_data["train"]["preds"] = tr.preds
-            graph_data["train"]["ds"] = tr.ds
-            graph_data["val"]["meta"] = val.meta
-            graph_data["val"]["preds"] = val.preds
-            graph_data["val"]["ds"] = val.ds
-            graph_data["test"]["meta"] = test.meta
-            graph_data["test"]["preds"] = test.preds
-            graph_data["test"]["ds"] = test.ds
-            torch.save(graph_data, cache_path)
 
         get_performance_baselines(self, graph_data["test"])
         torch.save(train_val_graph,  self.graph_dir / f"{self.role}_graph_train_val.pt")
@@ -808,9 +681,6 @@ class clientDES(Client):
             map_location=device,
         )
 
-        self._maybe_normalize_sample_feats(train_val_graph)
-        self._maybe_normalize_sample_feats(train_test_graph)
-
         bidir = self.args.gnn_bidirectionality
         enforce_bidirectionality(train_val_graph, bidir)
         enforce_bidirectionality(train_test_graph, bidir)
@@ -819,14 +689,10 @@ class clientDES(Client):
             drop_cc_edges(train_val_graph)
             drop_cc_edges(train_test_graph)
 
-        self._active_clf_keys = None
-        if bool(getattr(self.args, "graph_drop_disconnected_cls", False)):
-            self._drop_disconnected_classifiers(train_val_graph, train_test_graph, (tr, val, test))
-
         # ---------------------------------------------------------
         # 2) Build model + optimizer + base meta-label loss
         # ---------------------------------------------------------
-        num_models = int(tr.meta.size(1))
+        num_models = self.num_models * self.args.num_clients
         metadata = train_val_graph.metadata()
         input_dims = {
             ntype: train_val_graph[ntype].x.size(-1)
@@ -904,9 +770,6 @@ class clientDES(Client):
         train_mask = train_val_graph["sample"].train_mask
         val_mask = train_val_graph["sample"].val_mask
         test_mask = train_test_graph["sample"].test_mask
-        if bool(getattr(self.args, "gnn_debug_degrees", False)):
-            self._print_sample_degrees(train_val_graph, "train_val")
-            self._print_sample_degrees(train_test_graph, "train_test")
         try:
             train_mask_tv = train_mask.cpu()
             val_mask_tv = val_mask.cpu()
@@ -1041,7 +904,7 @@ class clientDES(Client):
             elif isinstance(sage_num_neighbors, int):
                 sage_num_neighbors = [sage_num_neighbors] * num_layers
 
-            sage_batch_size = int(getattr(self.args, "gnn_sage_batch_size", 128))
+            sage_batch_size = int(getattr(self.args, "gnn_sage_batch_size", 32))
             sage_shuffle = bool(getattr(self.args, "gnn_sage_shuffle", True))
             if sampler_mode == "weighted":
                 sage_weighted = True
@@ -2312,252 +2175,6 @@ class clientDES(Client):
 
         self._save_phase3_line_plots()
 
-    def _maybe_normalize_sample_feats(self, graph) -> None:
-        mode = str(getattr(self.args, "gnn_sample_feat_norm", "none")).lower()
-        if mode in {"none", "", "off"}:
-            return
-        if "sample" not in graph.node_types:
-            return
-        x = graph["sample"].x
-        if x is None or x.numel() == 0:
-            return
-
-        if bool(getattr(self.args, "gnn_debug_feat_stats", False)):
-            with torch.no_grad():
-                mean = float(x.mean().item())
-                std = float(x.std().item())
-                xmin = float(x.min().item())
-                xmax = float(x.max().item())
-                print(
-                    f"[FedDES][Client {self.role}][diag] sample.x stats before norm "
-                    f"mean={mean:.4f} std={std:.4f} min={xmin:.4f} max={xmax:.4f}"
-                )
-
-        if mode == "layernorm":
-            graph["sample"].x = torch.nn.functional.layer_norm(x, x.shape[1:])
-        elif mode == "l2":
-            graph["sample"].x = torch.nn.functional.normalize(x, p=2, dim=1)
-        else:
-            return
-
-        if bool(getattr(self.args, "gnn_debug_feat_stats", False)):
-            with torch.no_grad():
-                x2 = graph["sample"].x
-                mean = float(x2.mean().item())
-                std = float(x2.std().item())
-                xmin = float(x2.min().item())
-                xmax = float(x2.max().item())
-                print(
-                    f"[FedDES][Client {self.role}][diag] sample.x stats after norm "
-                    f"mean={mean:.4f} std={std:.4f} min={xmin:.4f} max={xmax:.4f}"
-                )
-
-    def _print_sample_degrees(self, graph, label: str) -> None:
-        rel = ("classifier", "cs", "sample")
-        if rel not in graph.edge_index_dict:
-            print(f"[FedDES][Client {self.role}][diag] {label} graph missing {rel} edges")
-            return
-        edge_index = graph[rel].edge_index
-        if edge_index is None or edge_index.numel() == 0:
-            print(f"[FedDES][Client {self.role}][diag] {label} graph has 0 cs edges")
-            return
-        sample_count = int(graph["sample"].x.size(0))
-        deg = degree(edge_index[1], num_nodes=sample_count)
-        zero = int((deg == 0).sum().item())
-        mean = float(deg.float().mean().item())
-        print(
-            f"[FedDES][Client {self.role}][diag] {label} cs sample degree "
-            f"mean={mean:.2f} zero={zero}/{sample_count}"
-        )
-
-    def _drop_disconnected_classifiers(
-        self,
-        train_val_graph,
-        train_test_graph,
-        bundles,
-    ):
-        rel_cs = ("classifier", "cs", "sample")
-        if ("classifier" not in train_val_graph.node_types) or (rel_cs not in train_val_graph.edge_index_dict):
-            return None
-
-        num_classifiers = int(
-            getattr(train_val_graph["classifier"], "num_nodes", train_val_graph["classifier"].x.size(0))
-        )
-        if num_classifiers <= 0:
-            return None
-
-        deg = torch.zeros(num_classifiers, dtype=torch.long)
-        for graph in (train_val_graph, train_test_graph):
-            if rel_cs in graph.edge_index_dict:
-                ei = graph[rel_cs].edge_index
-                if ei is None or ei.numel() == 0:
-                    continue
-                src = ei[0].detach().to("cpu", non_blocking=True).long()
-                deg.index_add_(0, src, torch.ones_like(src))
-
-        keep_mask = deg > 0
-        keep_count = int(keep_mask.sum().item())
-        if keep_count == num_classifiers:
-            return keep_mask
-        if keep_count == 0:
-            print(
-                f"[FedDES][Client {self.role}][warn] all classifiers have 0 sample connections; "
-                "skipping classifier dropping."
-            )
-            return None
-
-        keep_idx = keep_mask.nonzero(as_tuple=False).view(-1)
-
-        def _filter_graph(graph):
-            clf_map = torch.full((num_classifiers,), -1, dtype=torch.long, device=graph["classifier"].x.device)
-            clf_map[keep_idx.to(clf_map.device)] = torch.arange(keep_idx.numel(), device=clf_map.device)
-
-            # Filter classifier node store
-            clf_store = graph["classifier"]
-            for key in list(clf_store.keys()):
-                val = clf_store[key]
-                if torch.is_tensor(val) and val.size(0) == num_classifiers:
-                    clf_store[key] = val[keep_idx.to(val.device)]
-                elif isinstance(val, list) and len(val) == num_classifiers:
-                    clf_store[key] = [val[i] for i in keep_idx.tolist()]
-            clf_store.num_nodes = keep_idx.numel()
-
-            # Filter edges that touch classifier nodes
-            for et in graph.edge_types:
-                src_t, _, dst_t = et
-                if (src_t != "classifier") and (dst_t != "classifier"):
-                    continue
-                edge = graph[et]
-                ei = edge.edge_index
-                if ei is None or ei.numel() == 0:
-                    continue
-                src, dst = ei[0], ei[1]
-                keep = torch.ones(src.size(0), dtype=torch.bool, device=src.device)
-                if src_t == "classifier":
-                    keep = keep & keep_mask.to(src.device)[src]
-                if dst_t == "classifier":
-                    keep = keep & keep_mask.to(dst.device)[dst]
-                if not bool(keep.any()):
-                    edge.edge_index = torch.empty((2, 0), dtype=ei.dtype, device=ei.device)
-                    if getattr(edge, "edge_attr", None) is not None:
-                        edge.edge_attr = edge.edge_attr[:0]
-                    continue
-                new_src = src[keep]
-                new_dst = dst[keep]
-                if src_t == "classifier":
-                    new_src = clf_map[new_src]
-                if dst_t == "classifier":
-                    new_dst = clf_map[new_dst]
-                edge.edge_index = torch.stack([new_src, new_dst], dim=0)
-                if getattr(edge, "edge_attr", None) is not None:
-                    edge.edge_attr = edge.edge_attr[keep]
-                for key, val in list(edge.items()):
-                    if key in {"edge_index", "edge_attr"}:
-                        continue
-                    if torch.is_tensor(val) and val.size(0) == ei.size(1):
-                        edge[key] = val[keep]
-
-        def _slice_bundle(bundle):
-            if getattr(bundle, "meta", None) is not None:
-                bundle.meta = bundle.meta[:, keep_idx.to(bundle.meta.device)]
-            if getattr(bundle, "preds", None) is not None:
-                bundle.preds = bundle.preds[:, keep_idx.to(bundle.preds.device)]
-            if getattr(bundle, "ds", None) is not None:
-                ds = bundle.ds
-                num_classes = int(getattr(self.args, "num_classes", 1))
-                if ds.dim() == 2 and ds.size(1) % max(num_classes, 1) == 0:
-                    M = int(ds.size(1) // max(num_classes, 1))
-                    if M == num_classifiers:
-                        ds_view = ds.view(ds.size(0), M, num_classes)
-                        ds_view = ds_view[:, keep_idx.to(ds.device), :]
-                        bundle.ds = ds_view.reshape(ds.size(0), -1)
-                    else:
-                        print(
-                            f"[FedDES][Client {self.role}][warn] bundle.ds columns ({ds.size(1)}) "
-                            f"do not match expected M*C ({num_classifiers}*{num_classes}); skipping ds slicing."
-                        )
-
-        _filter_graph(train_val_graph)
-        _filter_graph(train_test_graph)
-        for bundle in bundles:
-            _slice_bundle(bundle)
-
-        kept_keys = None
-        if hasattr(train_val_graph["classifier"], "clf_keys"):
-            kept_keys = train_val_graph["classifier"].clf_keys
-        else:
-            if len(self.global_clf_keys) == num_classifiers:
-                kept_keys = [self.global_clf_keys[i] for i in keep_idx.tolist()]
-        if kept_keys is not None:
-            self._active_clf_keys = kept_keys
-
-        print(
-            f"[FedDES][Client {self.role}] Dropped classifiers with 0 sample connections: "
-            f"{num_classifiers} -> {keep_count}"
-        )
-        return keep_mask
-
-    def _apply_oof_to_train_graph_data(self, train_dict: Dict[str, torch.Tensor], oof_cache: Dict[str, Any]) -> bool:
-        if not oof_cache:
-            return False
-        local_indices = oof_cache.get("local_clf_indices", [])
-        if not local_indices:
-            print(f"[FedDES][Client {self.role}][warn] OOF cache missing local_clf_indices; skipping OOF merge.")
-            return False
-
-        ds = train_dict.get("ds")
-        y = train_dict.get("y")
-        if ds is None or y is None:
-            print(f"[FedDES][Client {self.role}][warn] train split missing ds/y; skipping OOF merge.")
-            return False
-
-        num_classes = int(getattr(self.args, "num_classes", 1))
-        M = int(ds.size(1) // max(num_classes, 1))
-        if M * max(num_classes, 1) != int(ds.size(1)):
-            print(f"[FedDES][Client {self.role}][warn] ds shape not divisible by num_classes; skipping OOF merge.")
-            return False
-
-        probs = ds.view(ds.size(0), M, num_classes).clone()
-        oof_probs = oof_cache.get("probs", None)
-        oof_y = oof_cache.get("y", None)
-        if oof_probs is None:
-            print(f"[FedDES][Client {self.role}][warn] OOF cache missing probs; skipping OOF merge.")
-            return False
-
-        if oof_probs.size(0) != probs.size(0):
-            print(
-                f"[FedDES][Client {self.role}][warn] OOF rows ({oof_probs.size(0)}) "
-                f"!= train rows ({probs.size(0)}); skipping OOF merge."
-            )
-            return False
-
-        if (oof_y is not None) and (oof_y.size(0) == y.size(0)):
-            if not bool((oof_y.to(y.device) == y).all().item()):
-                print(f"[FedDES][Client {self.role}][warn] OOF labels differ from train labels.")
-
-        probs[:, local_indices, :] = oof_probs.to(probs.device)
-        preds = probs.argmax(dim=2)
-        meta = compute_meta_labels(
-            probs,
-            preds,
-            y,
-            min_positive=int(getattr(self.args, "graph_meta_min_pos", 3)),
-        )
-
-        train_dict["ds"] = probs.reshape(probs.size(0), -1)
-        train_dict["preds"] = preds
-        train_dict["meta"] = meta.float()
-
-        feat_mode = str(getattr(self.args, "graph_sample_node_feats", "ds")).lower()
-        if feat_mode == "ds":
-            train_dict["feats"] = train_dict["ds"]
-
-        print(
-            f"[FedDES][Client {self.role}] Applied OOF stacking to train split "
-            f"(local classifiers={len(local_indices)})."
-        )
-        return True
-
     def _save_meta_selection_summary(
         self,
         selection_matrix: torch.Tensor,
@@ -2581,7 +2198,6 @@ class clientDES(Client):
         if unique_labels.size == 0 or selection.size == 0:
             return
 
-        clf_keys = getattr(self, "_active_clf_keys", None) or self.global_clf_keys
         for cls in unique_labels:
             mask = labels_np == cls
             if not mask.any():
@@ -2589,7 +2205,7 @@ class clientDES(Client):
             target_class_count = int(mask.sum())
             entries = []
             avg_selection = selection[mask].mean(axis=0)
-            for clf_idx, (home_role, model_str) in enumerate(clf_keys):
+            for clf_idx, (home_role, model_str) in enumerate(self.global_clf_keys):
                 home_counts = label_counts_map.get(home_role, {})
                 home_total = sum(home_counts.values()) or 1
                 support_count = int(home_counts.get(int(cls), 0))

@@ -20,7 +20,7 @@ from flcore.servers.servertgp import FedTGP
 # from flcore.servers.serverktl_stylegan_3 import FedKTL as FedKTL_stylegan_3
 from flcore.servers.serverktl_stable_diffusion import FedKTL as FedKTL_stable_diffusion
 from flcore.servers.servermrl import FedMRL
-from flcore.servers.serverdes import FedDES
+from flcore.servers.serverdes_prototypes import FedDES
 from flcore.servers.serverpae import FedPAE
 from typing import Any, Callable, Dict, List, Mapping, Tuple
 
@@ -556,7 +556,6 @@ if __name__ == "__main__":
     parser.add_argument('--graph_cs_mode', type=str, default="balanced_acc:logloss")
     parser.add_argument('--graph_meta_min_pos', type=int, default=3)
     parser.add_argument('--graph_sample_node_feats', type=str, default="embedding_mean")
-    parser.add_argument('--graph_drop_disconnected_cls', type=str2bool, default=False)
     parser.add_argument('--gnn_arch', type=str, default="gat")
     parser.add_argument('--gnn_heterogenous', type=str2bool, default=False)
     parser.add_argument('--gnn_hidden_dim', type=int, default=128)
@@ -573,14 +572,6 @@ if __name__ == "__main__":
         default="none",
         help="Neighbor sampling mode: none | unweighted | weighted",
     )
-    parser.add_argument(
-        '--gnn_sample_feat_norm',
-        type=str,
-        default="none",
-        help="Sample feature normalization: none | layernorm | l2",
-    )
-    parser.add_argument('--gnn_debug_feat_stats', type=str2bool, default=False)
-    parser.add_argument('--gnn_debug_degrees', type=str2bool, default=False)
     parser.add_argument('--gnn_pair_decoder', type=str, default=None)
     parser.add_argument('--gnn_bidirectionality', type=str2bool, default=False)
     parser.add_argument('--gnn_es_metric', type=str, default="val_loss")
@@ -591,7 +582,7 @@ if __name__ == "__main__":
                         help="Ensemble combination: soft (weights * probs) or hard (weights * one-hot preds).")
     parser.add_argument('--gnn_learned_cc_attrs', type=str2bool, default=False)
     parser.add_argument('--gnn_update_classifier_nodes', type=str2bool, default=False)
-    parser.add_argument('--gnn_learned_cc_attr_dim', type=int, default=32)
+    parser.add_argument('--gnn_learned_cc_attr_dim', type=int, default=64)
     parser.add_argument('--gnn_drop_cc_edges', type=str2bool, default=False,
                         help="If true, ignore classifier-classifier edges when building the meta-learner.")
     parser.add_argument('--gnn_diversity_regularization', type=str2bool, default=False)
