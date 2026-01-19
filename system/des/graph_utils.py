@@ -215,6 +215,16 @@ def project_to_DS(self, loader, classifier_pool, calibrate_probs = True):
             features = encode_eicu_features(self, batches)
         else:
             features = encode_with_graph_encoder(self, batches)
+    elif feat_mode == "hybrid":
+        dataset_name = str(getattr(self.args, "data", getattr(self.args, "dataset", ""))).lower()
+        if "eicu" in dataset_name:
+            enc_feats = encode_eicu_features(self, batches)
+        else:
+            enc_feats = encode_with_graph_encoder(self, batches)
+        if enc_feats.dim() > 2:
+            enc_feats = enc_feats.view(enc_feats.size(0), -1)
+        enc_feats = F.normalize(enc_feats.float(), p=2, dim=1)
+        features = torch.cat([enc_feats, probs_flat], dim=1)
     elif feat_mode == "meta_feats":
         # Placeholder; actual computation happens in build_train_eval_graph
         features = probs_flat

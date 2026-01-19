@@ -107,6 +107,7 @@ gnn_configs:
   gnn_rank_max_pairs: 256
   gnn_rank_sample_n: 256
   gnn_use_pos_weight: false
+  gnn_drop_edge_rate: 0.0
   gnn_sampler: none
 
   # Search space for GNN/meta (cartesian product)
@@ -122,7 +123,7 @@ gnn_configs:
     gnn_es_metric: [val_loss, val_acc]
     gnn_sample_weight_mode: [difficulty, class_prevalence]
     gnn_ens_combination_mode: [weighted_vote]
-    gnn_loss: [meta_labels]
+    gnn_loss: [meta_labels_BCE]
     gnn_rank_lambda: [0, 0.5]
     gnn_rank_margin: [0.5]
     gnn_rank_max_pairs: [256]

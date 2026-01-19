@@ -276,7 +276,7 @@ class clientDES(Client):
             self.global_clf_keys = local_keys
             try:
                 ds, preds, y_true, meta_labels, feats = project_to_DS(
-                    self, val_loader, fold_pool, calibrate_probs=False
+                    self, val_loader, fold_pool, calibrate_probs=True
                 )
             finally:
                 self.global_clf_keys = prev_keys
@@ -400,7 +400,14 @@ class clientDES(Client):
 
                 if use_oof:
                     oof_cache = torch.load(oof_cache_path, map_location="cpu")
-                    train_loader = self.load_train_data(batch_size=self.batch_size)
+                    full_train_loader = self.load_train_data(batch_size=self.batch_size)
+                    train_loader = torch.utils.data.DataLoader(
+                        full_train_loader.dataset,
+                        batch_size=self.batch_size,
+                        shuffle=False,
+                        drop_last=False,
+                        num_workers=0,
+                    )
                     ds, preds, y_true, meta_labels, feats = project_to_DS(
                         self, train_loader, classifier_pool
                     )
@@ -769,8 +776,9 @@ class clientDES(Client):
         Train a meta-learner GNN on the pre-built graphs.
 
         gnn_loss options (self.args.gnn_loss):
-          - "meta_labels":   optimize only BCE on meta labels.
-          - "ensemble":      optimize only ensemble CrossEntropy on true labels.
+          - "meta_labels_BCE":        optimize BCE on binary meta labels.
+          - "meta_labels_regression": optimize MSE on margin targets (p_true - max_other).
+          - "ensemble":              optimize only ensemble CrossEntropy on true labels.
         """
 
         device = torch.device(device if device is not None else self.device)
@@ -839,11 +847,21 @@ class clientDES(Client):
             num_models,
         ).to(device)
 
+        epochs = int(getattr(self.args, "gnn_epochs", 300))
+        patience = int(getattr(self.args, "gnn_patience", 20))
+        es_metric = getattr(self.args, "gnn_es_metric", "val_loss")
         lr, wd = self.args.gnn_lr, self.args.gnn_weight_decay
         optimizer = torch.optim.Adam(
             gnn_model.parameters(),
             lr=lr,
             weight_decay=wd,
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min" if es_metric == "val_loss" else "max",
+            factor=0.5,
+            patience=max(1, int(patience / 2)),
+            verbose=True,
         )
 
         # Per-sample weights (e.g., inverse class frequency) – preserves your current behavior.
@@ -861,11 +879,17 @@ class clientDES(Client):
                 sw_mean = sw.mean().clamp(min=1e-8)
                 sample_weights = (sw / sw_mean).to(device=device)
 
+        gnn_loss_mode = str(getattr(self.args, "gnn_loss", "meta_labels_BCE")).lower()
+        if gnn_loss_mode in {"meta_labels", "meta_labels_bce"}:
+            gnn_loss_mode = "meta_labels_bce"
+        elif gnn_loss_mode in {"meta_labels_regression"}:
+            gnn_loss_mode = "meta_labels_regression"
+
         # Per-classifier positive weighting to avoid trivial "mostly-zero" meta solutions.
         # pos_weight[m] = (#neg_m / #pos_m). This upweights positive meta-labels for rare-correct classifiers.
         use_pos_weight = bool(getattr(self.args, "gnn_use_pos_weight", False))
         pos_weight = None
-        if use_pos_weight:
+        if gnn_loss_mode == "meta_labels_bce" and use_pos_weight:
             with torch.no_grad():
                 pos = tr.meta.float().sum(dim=0)  # [M]
                 neg = tr.meta.size(0) - pos       # [M]
@@ -893,10 +917,13 @@ class clientDES(Client):
                 except Exception:
                     pass
 
-        if pos_weight is None:
-            criterion_none = torch.nn.BCEWithLogitsLoss(reduction="none")
+        if gnn_loss_mode == "meta_labels_regression":
+            criterion_none = torch.nn.MSELoss(reduction="none")
         else:
-            criterion_none = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
+            if pos_weight is None:
+                criterion_none = torch.nn.BCEWithLogitsLoss(reduction="none")
+            else:
+                criterion_none = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
 
         # ---------------------------------------------------
         # 3) Masks for train/val/test sample nodes in graphs
@@ -1726,6 +1753,25 @@ class clientDES(Client):
             _spotcheck_split_alignment(train_val_graph, "val", val_mask, val, n_checks=3)
             _spotcheck_split_alignment(train_test_graph, "test", test_mask, test, n_checks=3)
 
+        def _margin_targets(ds: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+            num_classes = int(self.args.num_classes)
+            if ds.dim() != 2 or ds.size(1) % max(num_classes, 1) != 0:
+                raise ValueError("margin target expects ds with shape [N, M*C].")
+            M = int(ds.size(1) // max(num_classes, 1))
+            probs = ds.view(ds.size(0), M, num_classes).float()
+            y_idx = y.view(-1, 1, 1).expand(-1, M, 1)
+            p_true = probs.gather(2, y_idx).squeeze(-1)
+            probs_other = probs.clone()
+            probs_other.scatter_(2, y_idx, -1.0)
+            p_other = probs_other.max(dim=2).values
+            return p_true - p_other
+
+        train_margin = None
+        val_margin = None
+        if gnn_loss_mode == "meta_labels_regression":
+            train_margin = _margin_targets(tr.ds.to(device), tr.y.to(device))
+            val_margin = _margin_targets(val.ds.to(device), val.y.to(device))
+
         # Small helper: entmax / voting / hard ensemble over decision space
         def evaluate_ensemble(
             logits: torch.Tensor,
@@ -1822,10 +1868,6 @@ class clientDES(Client):
         # -----------------------------------
         # 4) Training loop + early stopping
         # -----------------------------------
-        epochs = int(getattr(self.args, "gnn_epochs", 300))
-        patience = int(getattr(self.args, "gnn_patience", 20))
-
-        es_metric = getattr(self.args, "gnn_es_metric", "val_loss")
         best_metric = -float("inf")
         best_state = None
         patience_counter = 0
@@ -1859,8 +1901,17 @@ class clientDES(Client):
                     # epoch_loader = sage_train_loader() if callable(sage_train_loader) else sage_train_loader
                     epoch_loader = sage_train_loader_fn() if sage_train_loader_fn is not None else sage_train_loader
 
+                    drop_edge_rate = float(getattr(self.args, "gnn_drop_edge_rate", 0.0))
                     for batch in epoch_loader:
                         batch = batch.to(device)
+                        if drop_edge_rate > 0:
+                            edge = batch[("sample", "ss", "sample")]
+                            edge_index = edge.edge_index
+                            if edge_index is not None and edge_index.numel() > 0:
+                                mask = torch.rand(edge_index.size(1), device=edge_index.device) > drop_edge_rate
+                                edge.edge_index = edge_index[:, mask]
+                                if getattr(edge, "edge_attr", None) is not None:
+                                    edge.edge_attr = edge.edge_attr[mask]
 
                         out = gnn_model(batch)  # [n_subgraph, M]
                         bs = int(batch["sample"].batch_size)
@@ -1878,8 +1929,13 @@ class clientDES(Client):
                         logits = out[:bs][keep]                 # [B, M]
                         train_meta = tr.meta[seed_local]        # [B, M]
 
-                        # --- meta-label loss (BCE on classifier correctness) ---
-                        per_elem = criterion_none(logits, train_meta)  # [B, M]
+                        # --- meta-label loss ---
+                        if gnn_loss_mode == "meta_labels_regression":
+                            target = train_margin[seed_local]
+                            pred = torch.tanh(logits)
+                            per_elem = criterion_none(pred, target)
+                        else:
+                            per_elem = criterion_none(logits, train_meta)  # [B, M]
                         per_sample = per_elem.mean(dim=1)              # [B]
                         if sample_weights is not None:
                             sw = sample_weights[seed_local].to(per_sample.device)
@@ -1932,11 +1988,27 @@ class clientDES(Client):
                 # Full-batch training (original behavior for non-SAGE)
                 # -----------------------------
                 else:
-                    logits = gnn_model(train_val_graph)[train_mask]  # [N_train, M]
+                    drop_edge_rate = float(getattr(self.args, "gnn_drop_edge_rate", 0.0))
+                    train_graph = train_val_graph
+                    if drop_edge_rate > 0:
+                        train_graph = train_val_graph.clone()
+                        edge = train_graph[("sample", "ss", "sample")]
+                        edge_index = edge.edge_index
+                        if edge_index is not None and edge_index.numel() > 0:
+                            mask = torch.rand(edge_index.size(1), device=edge_index.device) > drop_edge_rate
+                            edge.edge_index = edge_index[:, mask]
+                            if getattr(edge, "edge_attr", None) is not None:
+                                edge.edge_attr = edge.edge_attr[mask]
+
+                    logits = gnn_model(train_graph)[train_mask]  # [N_train, M]
                     train_meta = tr.meta                              # [N_train, M]
 
-                    # --- meta-label loss (BCE on classifier correctness) ---
-                    per_elem = criterion_none(logits, train_meta)  # [N_train, M]
+                    # --- meta-label loss ---
+                    if gnn_loss_mode == "meta_labels_regression":
+                        pred = torch.tanh(logits)
+                        per_elem = criterion_none(pred, train_margin)
+                    else:
+                        per_elem = criterion_none(logits, train_meta)  # [N_train, M]
                     per_sample = per_elem.mean(dim=1)              # [N_train]
                     if sample_weights is not None:
                         sw = sample_weights.to(per_sample.device)
@@ -2047,7 +2119,11 @@ class clientDES(Client):
                         print(f"[FedDES][Client {self.role}][diag][val][ep={epoch}] sigmoid-norm eval failed: {e}")
 
                 # Meta-label validation loss (kept for backwards compatibility)
-                val_meta_loss = criterion_none(val_logits, val.meta).mean()
+                if gnn_loss_mode == "meta_labels_regression":
+                    val_pred = torch.tanh(val_logits)
+                    val_meta_loss = criterion_none(val_pred, val_margin).mean()
+                else:
+                    val_meta_loss = criterion_none(val_logits, val.meta).mean()
 
                 # Ensemble metrics on val
                 val_soft_probs, val_hard_preds = evaluate_ensemble(val_logits, val.ds, val.preds)
@@ -2117,7 +2193,10 @@ class clientDES(Client):
                     val.y,
                 )
 
-                meta_preds = (val_logits > 0)
+                if gnn_loss_mode == "meta_labels_regression":
+                    meta_preds = (torch.tanh(val_logits) > 0)
+                else:
+                    meta_preds = (val_logits > 0)
                 y_true = val.meta.detach().cpu().numpy()
                 y_pred = meta_preds.detach().cpu().numpy()
 
@@ -2155,9 +2234,13 @@ class clientDES(Client):
                     )
 
             if es_metric == "val_loss":
-                curr_metric = -perf_metrics[es_metric]  # minimize loss
+                scheduler_metric = perf_metrics["val_loss"]
+                curr_metric = -perf_metrics["val_loss"]  # minimize loss
             else:
-                curr_metric = perf_metrics[es_metric]   # maximize metric
+                scheduler_metric = perf_metrics.get(es_metric, perf_metrics["val_loss"])
+                curr_metric = perf_metrics.get(es_metric, perf_metrics["val_loss"])  # maximize metric
+
+            scheduler.step(scheduler_metric)
 
 
             self.meta_history.append({
@@ -2533,7 +2616,10 @@ class clientDES(Client):
 
         if (oof_y is not None) and (oof_y.size(0) == y.size(0)):
             if not bool((oof_y.to(y.device) == y).all().item()):
-                print(f"[FedDES][Client {self.role}][warn] OOF labels differ from train labels.")
+                raise RuntimeError(
+                    f"[FedDES][Client {self.role}] OOF labels differ from train labels; "
+                    "disable shuffling or regenerate OOF cache."
+                )
 
         probs[:, local_indices, :] = oof_probs.to(probs.device)
         preds = probs.argmax(dim=2)

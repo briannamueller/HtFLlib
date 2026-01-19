@@ -7,8 +7,8 @@ pipeline:
     min_size: 10
     niid: true
     balance: false
-    seed: 1
-    train_ratio: 0.85
+    seed: 0
+    train_ratio: 0.80
   common_args:
     algorithm: FedDES
     num_clients: 20
@@ -23,26 +23,52 @@ pipeline:
       num_classes: 10
       feature_dim: 256
       NUM_MODELS: 5
-    eicu:
-      data: eICU_task=[mortality_48h]
+    eicu_defaults: &eicu_defaults
       model_family: eICU
       num_classes: 2
       feature_dim: 64
       NUM_MODELS: 3
       partition_builder: eicu
-      data_partition_args:
-        task: mortality_48h
+      data_partition_args: &eicu_partition_defaults
         min_size: 300
-        train_ratio: 0.85
-        seed: 1
         client_sort_mode: positives
         skip_partition_cli: true
         skip_partition_generation: true
+    eicu_mortality_48h:
+      <<: *eicu_defaults
+      data: eICU_task=[mortality_48h]
+      data_partition_args:
+        <<: *eicu_partition_defaults
+        task: mortality_48h
+    eicu_Shock_4h:
+      <<: *eicu_defaults
+      data: eICU_task=[Shock_4h]
+      data_partition_args:
+        <<: *eicu_partition_defaults
+        task: Shock_4h
+    eicu_ARF_4h:
+      <<: *eicu_defaults
+      data: eICU_task=[ARF_4h]
+      data_partition_args:
+        <<: *eicu_partition_defaults
+        task: ARF_4h
+    eicu_Shock_12h:
+      <<: *eicu_defaults
+      data: eICU_task=[Shock_12h]
+      data_partition_args:
+        <<: *eicu_partition_defaults
+        task: Shock_12h
+    eicu_ARF_12h:
+      <<: *eicu_defaults
+      data: eICU_task=[ARF_12h]
+      data_partition_args:
+        <<: *eicu_partition_defaults
+        task: ARF_12h
 
 base_configs:
   # Defaults / common settings
-  base_split_mode: split_train
-  base_split_seed: 123
+  base_split_mode: oof_stacking
+  base_split_seed: 0
   base_es_metric: val_loss    # options: val_loss | val_acc | val_bacc | val_temp_scaled_loss | cdsc
   base_es_patience: 20
   base_weighted_by_class: true
@@ -52,7 +78,7 @@ base_configs:
   sweep:
     base_es_metric: [val_temp_scaled_loss] #  val_temp_scaled_loss
     base_clf_lr: [0.0005] # [0.0001, 0.0003, 0.0005, 0.001]
-    base_single_model: [false, true]  # extend if you want to try both single and multi model settings
+    base_single_model: [true]  # extend if you want to try both single and multi model settings
     # add more base_* params here if needed
 
 
@@ -62,7 +88,7 @@ graph_configs:
   graph_k_per_class: 5
   graph_cs_topk: 3
   graph_cc_topk: 3
-  graph_sample_node_feats: embedding_mean   # options: ds | embedding_mean | embedding_concat
+  graph_sample_node_feats: embedding_mean   # options: ds | embedding_mean | embedding_concat | encoder | hybrid
   graph_cs_mode: balanced_acc:logloss       # format: score:tie (tie can be none)
   graph_drop_disconnected_cls: false
   proto_use: false
@@ -75,7 +101,7 @@ graph_configs:
     graph_cs_topk: [5]
     graph_cc_topk: [5]
     graph_meta_min_pos: [1]
-    graph_sample_node_feats: [encoder, embedding_mean] # encoder  # extend if you want other feature modes
+    graph_sample_node_feats: [encoder] # encoder  # extend if you want other feature modes
     graph_cs_mode: [gain:balanced_acc]
     proto_use: [false]
 
@@ -100,8 +126,7 @@ gnn_configs:
   gnn_sample_weight_mode: class_prevalence
   gnn_ens_combination_mode: hard   # options: soft | hard | voting
   gnn_learned_cc_attrs: false
-  gnn_learned_cc_attr_dim: 64
-  gnn_diversity_regularization: true
+  gnn_diversity_regularization: false
   gnn_diversity_lambda: 0.1
   gnn_diversity_eps: 1e-6
   gnn_diversity_binary_neighbor_k_cap: 9
@@ -110,6 +135,7 @@ gnn_configs:
   gnn_rank_max_pairs: 256
   gnn_rank_sample_n: 256
   gnn_use_pos_weight: false
+  gnn_drop_edge_rate: 0.0
   gnn_sampler: none
 
   # Search space for GNN/meta (cartesian product)
@@ -121,11 +147,10 @@ gnn_configs:
     gnn_lr: [0.005]
     gnn_use_sample_residual: [true]
     gnn_bidirectionality: [true]
-    gnn_diversity_regularization: [false]
     gnn_es_metric: [val_loss]
     gnn_sample_weight_mode: [difficulty]
     gnn_ens_combination_mode: [weighted_vote]
-    gnn_loss: [meta_labels]
+    gnn_loss: [meta_labels_BCE]
     gnn_rank_lambda: [0, 0.5]
     gnn_rank_margin: [0.9]
     gnn_rank_max_pairs: [512]

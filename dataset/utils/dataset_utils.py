@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 DEFAULT_BATCH_SIZE = 10
 DEFAULT_TRAIN_RATIO = 0.75  # merge original training set and test set, then split it manually.
 DEFAULT_ALPHA = 10
-DEFAULT_LABELS_PER_CLIENT = 5
+DEFAULT_LABELS_PER_CLIENT = 10
 DEFAULT_MIN_SIZE = 10
 
 def separate_data(

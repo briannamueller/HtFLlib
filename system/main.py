@@ -525,7 +525,7 @@ if __name__ == "__main__":
     parser.add_argument('-sfd', "--sub_feature_dim", type=int, default=128)
     # Optional validation / balanced accuracy
     parser.add_argument('--use_val', type=str2bool, default=True)
-    parser.add_argument('--val_ratio', type=float, default=0.2)
+    parser.add_argument('--val_ratio', type=float, default=0.25)
     parser.add_argument('--split_seed', type=int, default=0)
     parser.add_argument('--use_bacc_metric', type=str2bool, default=False)
     parser.add_argument('--ckpt_root', type=str, default="ckpts",
@@ -567,6 +567,7 @@ if __name__ == "__main__":
     parser.add_argument('--gnn_weight_decay', type=float, default=0.0001)
     parser.add_argument('--gnn_use_sample_residual', type=str2bool, default=False)
     parser.add_argument('--gnn_use_edge_attr', type=str2bool, default=False)
+    parser.add_argument('--gnn_drop_edge_rate', type=float, default=0.0)
     parser.add_argument(
         '--gnn_sampler',
         type=str,
@@ -585,7 +586,7 @@ if __name__ == "__main__":
     parser.add_argument('--gnn_bidirectionality', type=str2bool, default=False)
     parser.add_argument('--gnn_es_metric', type=str, default="val_loss")
     parser.add_argument('--gnn_patience', type=int, default=20)
-    parser.add_argument('--gnn_loss', type=str, default="meta_labels")
+    parser.add_argument('--gnn_loss', type=str, default="meta_labels_BCE")
     parser.add_argument('--gnn_sample_weight_mode', type=str, default="class_prevalence")
     parser.add_argument('--gnn_ens_combination_mode', type=str, default="soft",
                         help="Ensemble combination: soft (weights * probs) or hard (weights * one-hot preds).")
