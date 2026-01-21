@@ -269,6 +269,7 @@ class clientDES(Client):
                     es_metric=self.args.base_es_metric,
                     lr=self.args.base_clf_lr,
                     min_delta=self.args.base_es_min_delta,
+                    log_wandb=False,
                 )
                 fold_pool[(self.role, model_str)] = model
 
@@ -331,6 +332,7 @@ class clientDES(Client):
                 es_metric=self.args.base_es_metric,
                 lr=self.args.base_clf_lr,
                 min_delta=self.args.base_es_min_delta,
+                log_wandb=True,
             )
             torch.save(model.cpu(), self.base_dir / f"{self.role}_{model_str}.pt")
         
@@ -1068,7 +1070,7 @@ class clientDES(Client):
             elif isinstance(sage_num_neighbors, int):
                 sage_num_neighbors = [sage_num_neighbors] * num_layers
 
-            sage_batch_size = int(getattr(self.args, "gnn_sage_batch_size", 128))
+            sage_batch_size = int(getattr(self.args, "gnn_batch_size", 64))
             sage_shuffle = bool(getattr(self.args, "gnn_sage_shuffle", True))
             if sampler_mode == "weighted":
                 sage_weighted = True
@@ -1253,9 +1255,9 @@ class clientDES(Client):
                 # relations we want to sample.
 
                 num_layers = int(getattr(self.args, "gnn_layers", 2))
-                fanout = int(getattr(self.args, "gnn_sage_fanout", 5))
+                fanout = int(getattr(self.args, "gnn_sage_fanout", -1))
                 # ss_fanout = fanout
-                c_fanout = 3
+                c_fanout = -1
 
                 # Relations we want to actively sample
                 num_neighbors_map = {

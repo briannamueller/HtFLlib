@@ -75,7 +75,7 @@ SWEEPS_TSV="${RUN_DIR}/wandb_sweeps.tsv"
 # Cluster defaults (override-able)
 queue="${queue:-UI-GPU,MANSCI-GPU,COB-GPU}"
 gpu_req="${gpu_req:-ngpus=1}"
-base_gpu_req="${base_gpu_req:-ngpus=4}"
+base_gpu_req="${base_gpu_req:-ngpus=3}"
 meta_gpu_req="${meta_gpu_req:-ngpus=1}"
 # meta_gpu_req="${meta_gpu_req:-ngpus=1,gpu=true,gpu_k80=false,gpu_p100=false,gpu_1080ti=false,gpu_2080ti=false}"
 

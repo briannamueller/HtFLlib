@@ -70,14 +70,28 @@ config_path = Path(os.environ["CONFIG_FILE"])
 cfg = yaml.safe_load(config_path.read_text())
 pipeline = cfg.get("pipeline", {})
 family = os.environ["FAMILY"]
-family_cfg = pipeline.get("family_args", {}).get(family, {})
+family_args = pipeline.get("family_args", {})
+family_cfg = family_args.get(family, {})
 family_data = family_cfg.get("data_partition_args", {})
-if family == "eicu":
-    data = family_data or {}
-else:
-    data = pipeline.get("data_partition_args", {}).copy()
-    if family_data:
-        data.update(family_data)
+eicu_defaults = family_args.get("eicu_defaults", {}).get("data_partition_args", {})
+eicu_allowed = {
+    "task",
+    "data_dir",
+    "output_root",
+    "dataset_name",
+    "partition_id",
+    "train_ratio",
+    "min_size",
+    "seed",
+    "num_clients",
+    "prefer_positive",
+    "client_sort_mode",
+}
+data = pipeline.get("data_partition_args", {}).copy()
+if family == "eicu" and eicu_defaults:
+    data.update(eicu_defaults)
+if family_data:
+    data.update(family_data)
 
 skip_keys = {"skip_partition_cli", "skip_partition_generation"}
 args = []
@@ -94,6 +108,8 @@ def add_bool_flag(key: str, value: bool) -> None:
 
 for key in sorted(data):
     if key in skip_keys:
+        continue
+    if family == "eicu" and key not in eicu_allowed:
         continue
     value = data[key]
     if isinstance(value, bool):

@@ -154,6 +154,9 @@ def project_to_DS(self, loader, classifier_pool, calibrate_probs = True):
         # 1) Fit calibrators once (on the "train" split) and cache
         # ----------------------------------------------------
         pool_calibrators = getattr(self, "_pool_calibrators", None)
+        if pool_calibrators is not None and len(pool_calibrators) != num_classifiers:
+            pool_calibrators = None
+            setattr(self, "_pool_calibrators", None)
         if pool_calibrators is None:
             pool_calibrators = []
             for i in range(num_classifiers):

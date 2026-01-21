@@ -232,6 +232,7 @@ def fit_clf(
     es_metric="val_loss",   # "val_loss" or "val_temp_scaled_loss"
     lr=1e-3,
     warmup_epochs=10,
+    log_wandb: bool | None = None,
 ):
     model = BaseHeadSplit(self.args, model_id).to(device)
     loss_fn = build_loss_fn(self, getattr(self.args, "base_weighted_loss", True), device)
@@ -330,8 +331,14 @@ def fit_clf(
     def _should_log_wandb() -> bool:
         if wandb is None:
             return False
+        if log_wandb is False:
+            return False
         flag = os.getenv("WANDB_BASE_LOG", "")
-        return flag == "" or flag.lower() not in {"0", "false"}
+        if flag != "" and flag.lower() in {"0", "false"}:
+            return False
+        if log_wandb is True:
+            return True
+        return True
 
     if history and fieldnames and _should_log_wandb():
         run = None

@@ -540,7 +540,7 @@ if __name__ == "__main__":
                         help="Hint for sweep-mode runs (passed through from controller).")
     # FedDES-specific overrides (base/graph/gnn)
     parser.add_argument('--base_split_mode', type=str, default="split_train")
-    parser.add_argument('--base_split_seed', type=int, default=123)
+    parser.add_argument('--base_split_seed', type=int, default=1)
     parser.add_argument('--base_es_metric', type=str, default="val_loss")
     parser.add_argument('--base_es_patience', type=int, default=20)
     parser.add_argument('--base_weighted_by_class', type=str2bool, default=True)
@@ -568,6 +568,7 @@ if __name__ == "__main__":
     parser.add_argument('--gnn_use_sample_residual', type=str2bool, default=False)
     parser.add_argument('--gnn_use_edge_attr', type=str2bool, default=False)
     parser.add_argument('--gnn_drop_edge_rate', type=float, default=0.0)
+    parser.add_argument('--gnn_batch_size', type=int, default=64)
     parser.add_argument(
         '--gnn_sampler',
         type=str,
@@ -583,7 +584,7 @@ if __name__ == "__main__":
     parser.add_argument('--gnn_debug_feat_stats', type=str2bool, default=False)
     parser.add_argument('--gnn_debug_degrees', type=str2bool, default=False)
     parser.add_argument('--gnn_pair_decoder', type=str, default=None)
-    parser.add_argument('--gnn_bidirectionality', type=str2bool, default=False)
+    parser.add_argument('--gnn_bidirectionality', type=str2bool, default=True)
     parser.add_argument('--gnn_es_metric', type=str, default="val_loss")
     parser.add_argument('--gnn_patience', type=int, default=20)
     parser.add_argument('--gnn_loss', type=str, default="meta_labels_BCE")
