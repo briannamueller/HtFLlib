@@ -87,7 +87,7 @@ smp="${smp:-5}"
 base_tc="${base_tc:-100}"
 graph_tc="${graph_tc:-20}"
 meta_tc="${meta_tc:-1}"
-MAX_META_JOBS="${MAX_META_JOBS:-16}"           # 0 => unlimited
+MAX_META_JOBS="${MAX_META_JOBS:-8}"           # 0 => unlimited
 META_CHECK_INTERVAL="${META_CHECK_INTERVAL:-60}"  # seconds between qstat poll
 
 # Meta modes

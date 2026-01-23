@@ -41,7 +41,8 @@ cd system
 # python -u main.py -ab 1 -lr 0.01 -jr 1 -lbs 10 -ls 1 -nc 20 -ncl 10 -data Cifar10 -m HtFE-img-3 -fd 256 -did 4 -algo FedMRL -sfd 128 > total-Cifar10-HtFE-img-3-fd=256-FedMRL.out 2>&1 &
 
 metric=acc
-data=Cifar10
+# data=Cifar10
+data="eICU_task=[Shock_4h]"
 models=HtFE-img-5
 fd=256
 alpha=10
@@ -50,8 +51,18 @@ C=5
 min_size=10
 train_ratio=0.8
 seed=1
-nc=20
+nc=50
 use_val=true
+
+if [[ "${data}" == eICU_task=\[*\] ]]; then
+    models=eICU
+    fd=64
+    min_size=150
+else
+    models=HtFE-img-5
+    fd=256
+    min_size=10
+fi
 
 declare -A method_opts=(
     [Local]="-algo Local"
@@ -75,7 +86,13 @@ else
     use_bacc_args=""
 fi
 
-partition_id="${type}[alpha=${alpha},C=${C},min_size=${min_size}]_nc[${nc}]_tr[${train_ratio}]_s[${seed}]"
+if [[ "${data}" == eICU_task=\[*\] ]]; then
+    eicu_task="${data#eICU_task=[}"
+    eicu_task="${eicu_task%]}"
+    partition_id="eicu[task=${eicu_task},min_size=${min_size}]_nc[${nc}]_tr[${train_ratio}]_s[${seed}]"
+else
+    partition_id="${type}[alpha=${alpha},C=${C},min_size=${min_size}]_nc[${nc}]_tr[${train_ratio}]_s[${seed}]"
+fi
 dataset_tag="${data}-${partition_id}"
 run_root="PFL/${metric}"
 log_root="${run_root}/logs/${dataset_tag}"

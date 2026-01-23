@@ -9,9 +9,10 @@ pipeline:
     balance: false
     seed: 1
     train_ratio: 0.80
+    num_clients: 50
   common_args:
     algorithm: FedDES
-    num_clients: 20
+    num_clients: 50
     global_rounds: 1
     local_epochs: 300
     use_val: true
@@ -30,7 +31,7 @@ pipeline:
       NUM_MODELS: 3
       partition_builder: eicu
       data_partition_args: &eicu_partition_defaults
-        min_size: 300
+        min_size: 150
         client_sort_mode: prevalence
         skip_partition_cli: true
         skip_partition_generation: true
@@ -74,8 +75,8 @@ base_configs:
 
   # Search space for base training (cartesian product)
   sweep:
-    base_es_metric: [val_temp_scaled_loss] #  val_temp_scaled_loss
-    base_clf_lr: [0.0005] # [0.0001, 0.0003, 0.0005, 0.001]
+    base_es_metric: [val_temp_scaled_loss, val_loss] #  val_temp_scaled_loss
+    base_clf_lr: [0.0005, 0.0001] # [0.0001, 0.0003, 0.0005, 0.001]
     base_single_model: [true]  # extend if you want to try both single and multi model settings
     # add more base_* params here if needed
 
@@ -108,10 +109,9 @@ gnn_configs:
   gnn_patience: 50
   gnn_batch_size: 64
   gnn_sample_weight_mode: class_prevalence
-  gnn_ens_combination_mode: hard   # options: soft | hard | voting
+  gnn_ens_combination_mode: hard   # options: soft | hard | soft_voting | hard_voting | soft_weighted_voting | hard_weighted_voting
   gnn_rank_max_pairs: 3000
   gnn_rank_sample_n: 512
-  gnn_drop_edge_rate: 0.0
 
   # Search space for GNN/meta (cartesian product)
   sweep:
@@ -120,16 +120,17 @@ gnn_configs:
     gnn_heads: [4, 8]
     gnn_layers: [2]
     gnn_lr: [0.005]
-    gnn_es_metric: [val_loss]
+    gnn_es_metric: [val_loss, val_acc]
     gnn_sample_weight_mode: [difficulty]
-    gnn_ens_combination_mode: [weighted_vote]
+    gnn_ens_combination_mode: [soft_voting, soft_weighted_voting]
     gnn_loss: [meta_labels_regression]
-    gnn_rank_lambda: [0.5]
+    gnn_rank_lambda: [0.5,0]
     gnn_rank_margin: [0.2]
     gnn_weight_rank_loss: [true]
     gnn_use_edge_attr: [true]
     gnn_sampler: [unweighted]
     gnn_patience: [20]
+    gnn_drop_edge_rate: [0, 0.2]
 
   conditional_sweep:
     - when:

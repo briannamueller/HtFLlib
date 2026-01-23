@@ -958,6 +958,12 @@ class clientDES(Client):
         combination_mode = str(
             getattr(self.args, "gnn_ens_combination_mode", "soft")
         ).lower()
+        legacy_modes = {
+            "voting": "hard_voting",
+            "weighted_vote": "soft_voting",
+            "weighted_voting": "soft_voting",
+        }
+        combination_mode = legacy_modes.get(combination_mode, combination_mode)
         alpha = 1.5
 
         arch_name = str(getattr(self.args, "gnn_arch", "hetero_gat")).lower()
@@ -1788,45 +1794,67 @@ class clientDES(Client):
             """
             M = logits.size(1)
             C = self.args.num_classes
-            
-            weights = entmax_bisect(logits, alpha=alpha, dim=-1)  # [N, M]
+
             ds_local = ds.view(-1, M, C)                          # [N, M*C] → [N, M, C]
 
-            if combination_mode == "hard":
-                # Use non-zero entmax weights on hard base predictions.
-                if hard_preds is None:
-                    raise ValueError(
-                        "hard_preds required for hard ensemble combination."
-                    )
-                one_hot = F.one_hot(hard_preds, num_classes=C).float()    # [N, M, C]
-                soft_probs = (weights.unsqueeze(-1) * one_hot).sum(dim=1) # [N, C]
-
-            elif combination_mode in {"voting", "weighted_vote"}:
-                # Gate classifiers via sigmoid(logits) > 0.5, then normalized voting.
-                if hard_preds is None:
-                    raise ValueError(
-                        "hard_preds required for voting ensemble combination."
-                    )
-                gate = torch.sigmoid(logits)  # [N, M] in [0,1]
-                mask = (gate > 0.5).float()   # 0/1 votes
-                mask_sum = mask.sum(dim=1, keepdim=True)
-                if (mask_sum == 0).any():
-                    # Fall back to using all classifiers when none are selected.
-                    mask = torch.where(mask_sum == 0, torch.ones_like(mask), mask)
-                if combination_mode == "weighted_vote":
-                    soft_probs = (mask.unsqueeze(-1) * ds_local).sum(dim=1)
+            # --- Group A: Dense aggregation (entmax) ---
+            if combination_mode in {"soft", "hard"}:
+                weights = entmax_bisect(logits, alpha=alpha, dim=-1)  # [N, M]
+                if combination_mode == "soft":
+                    soft_probs = (weights.unsqueeze(-1) * ds_local).sum(dim=1)
                 else:
-                    mask_sum = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
-                    mask_weights = mask / mask_sum
+                    if hard_preds is None:
+                        raise ValueError("hard_preds required for 'hard' combination mode.")
                     one_hot = F.one_hot(hard_preds, num_classes=C).float()
-                    soft_probs = (mask_weights.unsqueeze(-1) * one_hot).sum(dim=1)
+                    soft_probs = (weights.unsqueeze(-1) * one_hot).sum(dim=1)
+
+            # --- Group B: Voting aggregation (gated) ---
+            elif "voting" in combination_mode:
+                if hard_preds is None:
+                    raise ValueError(f"hard_preds required for '{combination_mode}' mode.")
+
+                if "weighted" in combination_mode:
+                    raw_weights = F.relu(logits)
+                else:
+                    raw_weights = (logits > 0).float()
+
+                sum_w = raw_weights.sum(dim=1, keepdim=True)
+                fallback_mask = (sum_w == 0)
+                final_weights = torch.where(fallback_mask, torch.ones_like(raw_weights), raw_weights)
+                sum_w_final = final_weights.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                norm_weights = final_weights / sum_w_final
+
+                if "soft" in combination_mode:
+                    target = ds_local
+                else:
+                    target = F.one_hot(hard_preds, num_classes=C).float()
+
+                soft_probs = (norm_weights.unsqueeze(-1) * target).sum(dim=1)
 
             else:
-                # "soft": entmax weights over per-class probs [N, M, C] → [N, C]
-                soft_probs = (weights.unsqueeze(-1) * ds_local).sum(dim=1)
+                raise ValueError(f"Unknown gnn_ens_combination_mode: {combination_mode}")
 
             hard_out = soft_probs.argmax(dim=1)  # [N]
             return soft_probs, hard_out
+
+        def _selection_matrix_for_mode(logits: torch.Tensor):
+            if "voting" in combination_mode:
+                if "weighted" in combination_mode:
+                    selection_matrix = F.relu(logits)
+                else:
+                    selection_matrix = (logits > 0).float()
+                sum_sel = selection_matrix.sum(dim=1, keepdim=True)
+                fallback_rows = (sum_sel == 0).squeeze(1)
+                if fallback_rows.any():
+                    selection_matrix = torch.where(
+                        fallback_rows.unsqueeze(1),
+                        torch.ones_like(selection_matrix),
+                        selection_matrix,
+                    )
+                return selection_matrix, fallback_rows
+
+            selection_matrix = entmax_bisect(logits, alpha=alpha, dim=-1)
+            return selection_matrix, None
 
         # ---------------------------------------------------
         # 3.5) (Optional) Precompute train-local S-S edges for binary diversity
@@ -1936,8 +1964,10 @@ class clientDES(Client):
                             target = train_margin[seed_local]
                             pred = torch.tanh(logits)
                             per_elem = criterion_none(pred, target)
+                            pred_for_ranking = pred
                         else:
                             per_elem = criterion_none(logits, train_meta)  # [B, M]
+                            pred_for_ranking = logits
                         per_sample = per_elem.mean(dim=1)              # [B]
                         if sample_weights is not None:
                             sw = sample_weights[seed_local].to(per_sample.device)
@@ -1956,7 +1986,7 @@ class clientDES(Client):
                             if weight_rank_loss and (sample_weights is not None):
                                 rank_weights = sample_weights[seed_local].to(device)
                             rank_loss = within_sample_pairwise_rank_loss(
-                                logits,
+                                pred_for_ranking,
                                 train_meta,
                                 margin=rank_margin,
                                 max_pairs=rank_max_pairs,
@@ -2009,8 +2039,10 @@ class clientDES(Client):
                     if gnn_loss_mode == "meta_labels_regression":
                         pred = torch.tanh(logits)
                         per_elem = criterion_none(pred, train_margin)
+                        pred_for_ranking = pred
                     else:
                         per_elem = criterion_none(logits, train_meta)  # [N_train, M]
+                        pred_for_ranking = logits
                     per_sample = per_elem.mean(dim=1)              # [N_train]
                     if sample_weights is not None:
                         sw = sample_weights.to(per_sample.device)
@@ -2039,7 +2071,7 @@ class clientDES(Client):
                         weight_rank_loss = bool(getattr(self.args, "gnn_weight_rank_loss", False))
                         rank_weights = sample_weights if (weight_rank_loss and sample_weights is not None) else None
                         rank_loss = within_sample_pairwise_rank_loss(
-                            logits,
+                            pred_for_ranking,
                             train_meta,
                             margin=rank_margin,
                             max_pairs=rank_max_pairs,
@@ -2129,20 +2161,7 @@ class clientDES(Client):
 
                 # Ensemble metrics on val
                 val_soft_probs, val_hard_preds = evaluate_ensemble(val_logits, val.ds, val.preds)
-                if combination_mode in {"voting", "weighted_vote"}:
-                    val_gate = torch.sigmoid(val_logits)
-                    val_selection_matrix = (val_gate > 0.5).float()
-                    val_fallback_mask = val_selection_matrix.sum(dim=1, keepdim=True) == 0
-                    if val_fallback_mask.any():
-                        val_selection_matrix = torch.where(
-                            val_fallback_mask,
-                            torch.ones_like(val_selection_matrix),
-                            val_selection_matrix,
-                        )
-                    val_fallback_rows = val_fallback_mask.squeeze(1)
-                else:
-                    val_selection_matrix = entmax_bisect(val_logits, alpha=alpha, dim=-1)
-                    val_fallback_rows = None
+                val_selection_matrix, val_fallback_rows = _selection_matrix_for_mode(val_logits)
                 if val_fallback_rows is None:
                     val_ess_stats = _ess_stats(val_selection_matrix)
                     val_ess_fallback_stats = None
@@ -2162,20 +2181,7 @@ class clientDES(Client):
 
                 # ESS stats on train (same selection logic as val)
                 train_logits = gnn_model(train_val_graph)[train_mask]
-                if combination_mode in {"voting", "weighted_vote"}:
-                    train_gate = torch.sigmoid(train_logits)
-                    train_selection_matrix = (train_gate > 0.5).float()
-                    train_fallback_mask = train_selection_matrix.sum(dim=1, keepdim=True) == 0
-                    if train_fallback_mask.any():
-                        train_selection_matrix = torch.where(
-                            train_fallback_mask,
-                            torch.ones_like(train_selection_matrix),
-                            train_selection_matrix,
-                        )
-                    train_fallback_rows = train_fallback_mask.squeeze(1)
-                else:
-                    train_selection_matrix = entmax_bisect(train_logits, alpha=alpha, dim=-1)
-                    train_fallback_rows = None
+                train_selection_matrix, train_fallback_rows = _selection_matrix_for_mode(train_logits)
                 if train_fallback_rows is None:
                     train_ess_stats = _ess_stats(train_selection_matrix)
                     train_ess_fallback_stats = None
@@ -2329,14 +2335,7 @@ class clientDES(Client):
                 f"avg non-zero weights per sample={avg_nonzero_count:.2f}"
             )
 
-            if combination_mode in {"voting", "weighted_vote"}:
-                gate = torch.sigmoid(test_logits)
-                if combination_mode == "weighted_vote":
-                    selection_matrix = gate * (gate > 0.5).float()
-                else:
-                    selection_matrix = (gate > 0.5).float()
-            else:
-                selection_matrix = weights
+            selection_matrix, _ = _selection_matrix_for_mode(test_logits)
             self._save_meta_selection_summary(selection_matrix, test.y, combination_mode)
 
             FedDES_acc = (hard_preds == test.y).float().mean().item()

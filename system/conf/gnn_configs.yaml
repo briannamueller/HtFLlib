@@ -11,7 +11,7 @@ gnn_configs:
   gnn_es_metric: val_loss   # options: val_loss | val_micro_prec | val_micro_f1 | val_bacc
   gnn_patience: 20
   gnn_sample_weight_mode: class_prevalence
-  gnn_ens_combination_mode: hard   # options: soft | hard
+  gnn_ens_combination_mode: hard   # options: soft | hard | soft_voting | hard_voting | soft_weighted_voting | hard_weighted_voting
 
   # Search space for GNN/meta (cartesian product)
   sweep:

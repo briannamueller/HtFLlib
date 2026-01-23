@@ -157,6 +157,7 @@ class Client(object):
     def test_metrics(self):
         testloader = self.load_test_data()
         model = load_item(self.role, 'model', self.save_folder_name)
+        model.to(self.device)
         model.eval()
 
         test_acc = 0
@@ -214,6 +215,7 @@ class Client(object):
             raise RuntimeError("Validation requested but use_val is False.")
         valloader = self.load_val_data()
         model = load_item(self.role, 'model', self.save_folder_name)
+        model.to(self.device)
         model.eval()
 
         val_acc = 0
@@ -311,7 +313,13 @@ def save_item(item, role, item_name, item_path=None):
 
 def load_item(role, item_name, item_path=None):
     try:
-        return torch.load(os.path.join(item_path, role + "_" + item_name + ".pt"))
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        use_cuda = torch.cuda.is_available() and visible not in ("", "-1")
+        map_location = "cuda" if use_cuda else "cpu"
+        return torch.load(
+            os.path.join(item_path, role + "_" + item_name + ".pt"),
+            map_location=map_location,
+        )
     except FileNotFoundError:
         print(role, item_name, 'Not Found')
         return None
