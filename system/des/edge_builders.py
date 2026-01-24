@@ -275,6 +275,10 @@ def build_cs_edges_v2(
     """
     Standard FedDES CS edge builder, updated to support Prototypes.
     
+    Score/tie-break modes:
+      - score_mode: {"logloss", "gain", "balanced_gain", "balanced_acc", "true_prob"}
+      - tie_break_mode: same set or None
+
     The Logic:
     - For Real Samples: Uses neighbors only (Standard DES).
     - For Prototypes: Uses neighbors + Self (The "Small Tweak").
@@ -350,6 +354,37 @@ def build_cs_edges_v2(
             base = 0.0
         return (neigh_w[:, None] * (corr - base)).sum(axis=0)
 
+    def score_balanced_gain(neigh_idx: np.ndarray, neigh_w: np.ndarray) -> np.ndarray:
+        neigh_label = y_train[neigh_idx]
+        classes = np.unique(neigh_label)
+        corr = tr_meta_labels[neigh_idx, :].astype(np.float32)
+
+        # 1) Lift (performance - pool average) per neighbor
+        if gain_baseline == "mean_pool":
+            base = corr.mean(axis=1, keepdims=True)
+        else:
+            base = 0.0
+        lift = corr - base  # [K, M]
+
+        out = np.zeros(M, dtype=np.float32)
+        denom_classes = 0
+
+        for c in classes.tolist():
+            mask = (neigh_label == c)
+            if not np.any(mask):
+                continue
+            w_c = neigh_w[mask]
+
+            # 2) Normalize by per-class weight sum to remove density bias
+            denom = float(w_c.sum()) + eps
+            g_c = (w_c[:, None] * lift[mask, :]).sum(axis=0) / denom
+            out += g_c
+            denom_classes += 1
+
+        if denom_classes > 0:
+            out /= float(denom_classes)
+        return out
+
     def score_balanced_acc(neigh_idx: np.ndarray, neigh_w: np.ndarray) -> np.ndarray:
         neigh_label = y_train[neigh_idx]
         classes = np.unique(neigh_label)
@@ -373,6 +408,7 @@ def build_cs_edges_v2(
     def compute_score(mode: str, idx: np.ndarray, w: np.ndarray):
         if mode == "logloss": return score_logloss(idx, w)
         if mode == "gain": return score_gain(idx, w)
+        if mode == "balanced_gain": return score_balanced_gain(idx, w)
         if mode == "balanced_acc": return score_balanced_acc(idx, w)
         if mode == "true_prob": return score_true_prob(idx, w)
         raise ValueError(f"Unknown mode: {mode}")

@@ -316,10 +316,16 @@ def load_item(role, item_name, item_path=None):
         visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
         use_cuda = torch.cuda.is_available() and visible not in ("", "-1")
         map_location = "cuda" if use_cuda else "cpu"
-        return torch.load(
+        item = torch.load(
             os.path.join(item_path, role + "_" + item_name + ".pt"),
             map_location=map_location,
         )
+        if use_cuda and isinstance(item, torch.nn.Module):
+            try:
+                item = item.to("cuda")
+            except Exception:
+                pass
+        return item
     except FileNotFoundError:
         print(role, item_name, 'Not Found')
         return None

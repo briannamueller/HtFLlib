@@ -9,10 +9,10 @@ pipeline:
     balance: false
     seed: 1
     train_ratio: 0.80
-    num_clients: 50
+    num_clients: 20
   common_args:
     algorithm: FedDES
-    num_clients: 50
+    num_clients: 20
     global_rounds: 1
     local_epochs: 300
     use_val: true
@@ -75,8 +75,8 @@ base_configs:
 
   # Search space for base training (cartesian product)
   sweep:
-    base_es_metric: [val_temp_scaled_loss, val_loss] #  val_temp_scaled_loss
-    base_clf_lr: [0.0005, 0.0001] # [0.0001, 0.0003, 0.0005, 0.001]
+    base_es_metric: [val_temp_scaled_loss] #  val_temp_scaled_loss
+    base_clf_lr: [0.0005] # [0.0001, 0.0003, 0.0005, 0.001]
     base_single_model: [true]  # extend if you want to try both single and multi model settings
     # add more base_* params here if needed
 
@@ -94,7 +94,7 @@ graph_configs:
     graph_cc_topk: [5]
     graph_meta_min_pos: [1]
     graph_sample_node_feats: [hybrid] # encoder  # extend if you want other feature modes
-    graph_cs_mode: [gain:balanced_acc, balanced_acc:gain]
+    graph_cs_mode: [gain:logloss]
 
 
 gnn_configs:
@@ -116,21 +116,21 @@ gnn_configs:
   # Search space for GNN/meta (cartesian product)
   sweep:
     gnn_heterogenous: [true, false]
-    gnn_hidden_dim: [256, 512]
-    gnn_heads: [4, 8]
+    gnn_hidden_dim: [256]
+    gnn_heads: [4]
     gnn_layers: [2]
     gnn_lr: [0.005]
-    gnn_es_metric: [val_loss, val_acc]
+    gnn_es_metric: [val_loss]
     gnn_sample_weight_mode: [difficulty]
-    gnn_ens_combination_mode: [soft_voting, soft_weighted_voting]
-    gnn_loss: [meta_labels_regression]
-    gnn_rank_lambda: [0.5,0]
-    gnn_rank_margin: [0.2]
+    gnn_ens_combination_mode: [soft_weighted_voting, soft_voting, hard_voting, hard_weighted_voting]
+    gnn_loss: [meta_labels_soft_bce]
+    gnn_rank_lambda: [0]
+    gnn_rank_margin: [0.5]
     gnn_weight_rank_loss: [true]
     gnn_use_edge_attr: [true]
     gnn_sampler: [unweighted]
     gnn_patience: [20]
-    gnn_drop_edge_rate: [0, 0.2]
+    gnn_drop_edge_rate: [0]
 
   conditional_sweep:
     - when:
@@ -148,8 +148,8 @@ gnn_configs:
         gnn_arch: [hetero_gatv3]
         gnn_drop_cc_edges: [true]
         gnn_pair_decoder: [none]
-        gnn_learned_cc_attrs: [true, false]
-        gnn_update_classifier_nodes: [true, false]
+        gnn_learned_cc_attrs: [true]
+        gnn_update_classifier_nodes: [false]
 
 pae_configs:
   # Defaults / common settings
