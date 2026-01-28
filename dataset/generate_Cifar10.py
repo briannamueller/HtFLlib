@@ -66,7 +66,7 @@ def parse_args():
     parser.add_argument("--train-ratio", type=float, default=DEFAULT_TRAIN_RATIO)
     parser.add_argument("--C", type=int, default=2,
                         help="Number of classes assigned to each client (pat/exdir).")
-    parser.add_argument("--min-require-size-per-label", type=int, default=10)
+    parser.add_argument("--min-require-size-per-label", type=int, default=None)
     parser.add_argument("--min-size", type=int, default=DEFAULT_MIN_SIZE)
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()

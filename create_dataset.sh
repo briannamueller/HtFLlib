@@ -18,6 +18,10 @@ export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_LAUNCH_BLOCKING=1
 
+export EXDIR_DEBUG=1
+export EXDIR_DEBUG_EVERY=10
+
+
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-${SGE_O_WORKDIR:-$(pwd)}}"
@@ -137,7 +141,7 @@ PYTHONPATH="${PYTHONPATH:-}"
 PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${REPO_ROOT}:${REPO_ROOT}/system"
 export PYTHONPATH
 
-cmd=("${PYTHON_BINARY}" "${GENERATOR}")
+cmd=("${PYTHON_BINARY}" -u "${GENERATOR}")
 if [[ ${#DEFAULT_CLI[@]} -gt 0 ]]; then
   cmd+=("${DEFAULT_CLI[@]}")
 fi

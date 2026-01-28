@@ -421,9 +421,7 @@ def run(args):
     # reporter.report()
 
 
-if __name__ == "__main__":
-    total_start = time.time()
-
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     # general
     parser.add_argument('-go', "--goal", type=str, default="test", 
@@ -604,8 +602,12 @@ if __name__ == "__main__":
     parser.add_argument('--gnn_rank_margin', type=float, default=0.5)
     parser.add_argument('--gnn_rank_max_pairs', type=int, default=256)
     parser.add_argument('--gnn_rank_sample_n', type=int, default=256)
-    parser.add_argument('--gnn_weight_rank_loss', type=str2bool, default=False)
+    parser.add_argument('--gnn_hybrid_alpha', type=float, default=0.7,
+                        help="Hybrid distillation loss mix: alpha*BCE + (1-alpha)*soft distill.")
+    parser.add_argument('--gnn_hybrid_temp', type=float, default=0.5,
+                        help="Temperature for hybrid distillation teacher sharpening.")
     parser.add_argument('--gnn_use_pos_weight', type=str2bool, default=False)
+    parser.add_argument('--gnn_weight_rank_loss', type=str2bool, default=False)
     parser.add_argument('--eicu_seq_len', type=int, default=None,
                         help="Sequence length for eICU time-series models.")
     parser.add_argument('--eicu_in_channels', type=int, default=None,
@@ -623,6 +625,12 @@ if __name__ == "__main__":
     parser.add_argument('--skip_pae_training', type=str2bool, default=False,
                         help="If true, skip Phase 2 ensemble selection when results already exist.")
 
+    return parser
+
+
+if __name__ == "__main__":
+    total_start = time.time()
+    parser = build_arg_parser()
     args = parser.parse_args()
     env_data_partition = os.environ.get("DATASET_PARTITION", "").strip()
     if not args.data_partition and env_data_partition:

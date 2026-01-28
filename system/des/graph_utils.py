@@ -16,6 +16,7 @@ from torch_geometric.data import HeteroData
 from probmetrics.calibrators import get_calibrator
 from probmetrics.distributions import CategoricalLogits
 from sklearn.cluster import KMeans
+from sklearn.manifold import SpectralEmbedding
 
 
 def _resolve_attr(module: torch.nn.Module, attr: str):
@@ -63,6 +64,38 @@ def compute_meta_labels(probs, preds, labels, min_positive=5):
                 if needed <= 0:
                     break
     return mask.to(torch.uint8)
+
+
+def get_diversity_embeddings(preds: np.ndarray, n_components: int = 8) -> np.ndarray:
+    """
+    Computes spectral embeddings based on classifier error correlation.
+    Args:
+        preds: [N_samples, M_classifiers] Binary array (1=Correct, 0=Wrong)
+        n_components: Dimension of the output embedding.
+    Returns:
+        embeddings: [M_classifiers, n_components]
+    """
+    M = preds.shape[1]
+    if M < n_components + 1:
+        return np.zeros((M, n_components), dtype=np.float32)
+
+    preds_std = preds - preds.mean(axis=0)
+    std = preds.std(axis=0)
+    std[std == 0] = 1.0
+    preds_std = preds_std / std
+
+    correlation_matrix = (preds_std.T @ preds_std) / preds.shape[0]
+    affinity_matrix = (correlation_matrix + 1.0) / 2.0
+    np.fill_diagonal(affinity_matrix, 0.0)
+
+    try:
+        embedder = SpectralEmbedding(n_components=n_components, affinity="precomputed")
+        embeddings = embedder.fit_transform(affinity_matrix)
+    except Exception as e:
+        print(f"[Warning] Diversity embedding failed: {e}. Using zeros.")
+        embeddings = np.zeros((M, n_components), dtype=np.float32)
+
+    return embeddings.astype(np.float32)
 
 
 def calibrate_pool(self, loader, classifier_pool):
@@ -760,6 +793,16 @@ def build_train_eval_graph(
     per_class_hard_recall = masked_mean(tr_meta_np)
     true_class_probs = probs[np.arange(probs.shape[0]), :, y_tr_np][:, :, None]
     per_class_true_prob = masked_mean(true_class_probs.squeeze(-1))
+    # --- NEW: Calculate Average Margin per Class ---
+    probs_temp = probs.copy()
+    rows = np.arange(probs.shape[0])
+    probs_temp[rows[:, None], :, y_tr_np[:, None]] = -1.0
+    max_rival_probs = probs_temp.max(axis=2)
+    margins = true_class_probs.squeeze(-1) - max_rival_probs
+    per_class_avg_margin = masked_mean(margins)
+
+    # --- NEW: Calculate Diversity Embeddings ---
+    div_feats = get_diversity_embeddings(tr_meta_np, n_components=8)
 
     se = np.sqrt(per_class_hard_recall * (1.0 - per_class_hard_recall) / safe_counts)
     se = np.where(has_support[:, None], se, 0.0).astype(np.float32)
@@ -772,6 +815,7 @@ def build_train_eval_graph(
         [
             per_class_hard_recall.T,
             per_class_true_prob.T,
+            per_class_avg_margin.T,
             se.T,
             overall_accuracy.T,
             mean_true_prob.T,
@@ -797,7 +841,7 @@ def build_train_eval_graph(
                 if 0 <= int(cls) < self.args.num_classes:
                     dist_feats[idx, int(cls)] = float(cnt) / total
 
-    clf_x = torch.from_numpy(np.concatenate([clf_x_stats, dist_feats], axis=1)).float()
+    clf_x = torch.from_numpy(np.concatenate([clf_x_stats, dist_feats, div_feats], axis=1)).float()
 
     data = HeteroData()
     data['sample'].x = combined_feats.float()

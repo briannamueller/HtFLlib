@@ -38,6 +38,7 @@ import argparse
 import itertools
 import json
 import hashlib
+import importlib.util
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -162,13 +163,26 @@ def dict_to_cli(d: Dict[str, Any]) -> str:
 def fingerprint(cfg: Dict[str, Any], prefix: str) -> str:
     """
     Compute a short MD5 fingerprint of the subset of cfg whose keys
-    start with `prefix`. This mirrors the idea of derive_config_ids.
+    start with `prefix`. This mirrors derive_config_ids.
     """
     sub = {k: v for k, v in cfg.items() if isinstance(k, str) and k.startswith(prefix)}
     if not sub:
         return "none"
     blob = json.dumps(sub, sort_keys=True).encode("utf-8")
     return hashlib.md5(blob).hexdigest()[:8]
+
+
+def load_arg_defaults() -> Dict[str, Any]:
+    main_path = Path(__file__).parent / "system" / "main.py"
+    spec = importlib.util.spec_from_file_location("htfl_main", main_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load {main_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not hasattr(module, "build_arg_parser"):
+        raise RuntimeError("build_arg_parser() not found in system/main.py")
+    parser = module.build_arg_parser()
+    return vars(parser.parse_args([]))
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +472,13 @@ def main() -> None:
         gnn_configs = expand_section(gnn_section)
         pae_configs = expand_section(pae_section) if pae_section else [{}]
 
+    default_args = load_arg_defaults()
+
+    def with_defaults(cfg: Dict[str, Any]) -> Dict[str, Any]:
+        merged = default_args.copy()
+        merged.update(cfg)
+        return merged
+
     # Write CLI configs
     base_path = out_dir / "configs_base.txt"
     graph_path = out_dir / "configs_graph.txt"
@@ -474,11 +495,11 @@ def main() -> None:
     print(f"Wrote {len(gnn_configs)} gnn/meta configs to {gnn_path}")
     print(f"Wrote {len(pae_configs)} pae configs to {pae_path}")
 
-    # Write fingerprints
-    base_ids = [fingerprint(cfg, "base") for cfg in base_configs]
-    graph_ids = [fingerprint(cfg, "graph") for cfg in graph_configs]
-    gnn_ids = [fingerprint(cfg, "gnn") for cfg in gnn_configs]
-    pae_ids = [fingerprint(cfg, "pae") for cfg in pae_configs]
+    # Write fingerprints (include defaults for consistency with derive_config_ids)
+    base_ids = [fingerprint(with_defaults(cfg), "base") for cfg in base_configs]
+    graph_ids = [fingerprint(with_defaults(cfg), "graph") for cfg in graph_configs]
+    gnn_ids = [fingerprint(with_defaults(cfg), "gnn") for cfg in gnn_configs]
+    pae_ids = [fingerprint(with_defaults(cfg), "pae") for cfg in pae_configs]
 
     base_ids_path = out_dir / "base_ids.txt"
     graph_ids_path = out_dir / "graph_ids.txt"

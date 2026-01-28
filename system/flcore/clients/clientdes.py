@@ -541,17 +541,30 @@ class clientDES(Client):
             verbose=True,
         )
 
-        sample_weights = compute_sample_weights(
-            self,
-            tr.y,
-            tr.meta,
-            self.args.gnn_sample_weight_mode,
-        )
-        if sample_weights is not None:
-            with torch.no_grad():
-                sw = sample_weights.detach().float()
-                sw_mean = sw.mean().clamp(min=1e-8)
-                sample_weights = (sw / sw_mean).to(device=device)
+        sample_weights = None
+        weight_mode = str(getattr(self.args, "gnn_sample_weight_mode", "")).lower()
+        if weight_mode == "difficulty_soft":
+            num_models = int(tr.meta.size(1))
+            num_classes = int(self.args.num_classes)
+            ds_view = tr.ds.view(-1, num_models, num_classes).float().to(device)
+            y_expanded = tr.y.view(-1, 1, 1).expand(-1, num_models, 1).to(device)
+            true_class_conf = ds_view.gather(2, y_expanded).squeeze(2)
+            avg_confidence = true_class_conf.mean(dim=1)
+            raw_weights = 1.0 - avg_confidence
+            w_mean = raw_weights.mean().clamp(min=1e-8)
+            sample_weights = (raw_weights / w_mean).to(device)
+        else:
+            sample_weights = compute_sample_weights(
+                self,
+                tr.y,
+                tr.meta,
+                self.args.gnn_sample_weight_mode,
+            )
+            if sample_weights is not None:
+                with torch.no_grad():
+                    sw = sample_weights.detach().float()
+                    sw_mean = sw.mean().clamp(min=1e-8)
+                    sample_weights = (sw / sw_mean).to(device=device)
 
         gnn_loss_mode = str(getattr(self.args, "gnn_loss", "meta_labels_BCE")).lower()
         if gnn_loss_mode in {"meta_labels", "meta_labels_bce"}:
@@ -560,39 +573,16 @@ class clientDES(Client):
             gnn_loss_mode = "meta_labels_regression"
         elif gnn_loss_mode in {"meta_labels_soft_bce"}:
             gnn_loss_mode = "meta_labels_soft_bce"
-
-        use_pos_weight = bool(getattr(self.args, "gnn_use_pos_weight", False))
-        pos_weight = None
-        if gnn_loss_mode in {"meta_labels_bce", "meta_labels_soft_bce"} and use_pos_weight:
-            with torch.no_grad():
-                pos = tr.meta.float().sum(dim=0)
-                neg = tr.meta.size(0) - pos
-                pos_weight = (neg / pos.clamp(min=1.0)).to(device=device, dtype=torch.float)
-                pw_max = float(getattr(self.args, "gnn_pos_weight_max", 10.0))
-                if pw_max is not None and pw_max > 0:
-                    pos_weight = pos_weight.clamp(max=pw_max)
-                try:
-                    pw_q = {
-                        "min": float(pos_weight.min().item()),
-                        "q25": float(torch.quantile(pos_weight, torch.tensor(0.25, device=pos_weight.device)).item()),
-                        "med": float(torch.quantile(pos_weight, torch.tensor(0.50, device=pos_weight.device)).item()),
-                        "q75": float(torch.quantile(pos_weight, torch.tensor(0.75, device=pos_weight.device)).item()),
-                        "max": float(pos_weight.max().item()),
-                    }
-                    print(
-                        f"[FedDES][Client {self.role}][diag] BCE pos_weight stats "
-                        f"min={pw_q['min']:.3f} q25={pw_q['q25']:.3f} med={pw_q['med']:.3f} q75={pw_q['q75']:.3f} max={pw_q['max']:.3f}"
-                    )
-                except Exception:
-                    pass
+        elif gnn_loss_mode in {"hybrid_distillation"}:
+            gnn_loss_mode = "hybrid_distillation"
 
         if gnn_loss_mode == "meta_labels_regression":
             criterion_none = torch.nn.MSELoss(reduction="none")
         else:
-            if pos_weight is None:
-                criterion_none = torch.nn.BCEWithLogitsLoss(reduction="none")
-            else:
-                criterion_none = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
+            criterion_none = torch.nn.BCEWithLogitsLoss(reduction="none")
+        criterion_soft = torch.nn.MSELoss(reduction="none")
+        HYBRID_ALPHA = float(getattr(self.args, "gnn_hybrid_alpha", 0.7))
+        HYBRID_TEMP = float(getattr(self.args, "gnn_hybrid_temp", 0.5))
 
         train_mask = train_val_graph["sample"].train_mask
         val_mask = train_val_graph["sample"].val_mask
@@ -1077,25 +1067,59 @@ class clientDES(Client):
                         logits = out[:bs][keep]
                         train_meta = tr.meta[seed_local]
 
-                        # --- LOSS LOGIC FIX ---
-                        if gnn_loss_mode == "meta_labels_regression":
+                        # --- Loss logic ---
+                        if gnn_loss_mode == "hybrid_distillation":
+                            target_binary = train_meta
+                            loss_bin_elem = criterion_none(logits, target_binary)
+                            loss_bin = loss_bin_elem.mean(dim=1)
+
+                            M = logits.size(1)
+                            C = int(self.args.num_classes)
+                            batch_ds = tr.ds[seed_local].view(-1, M, C).to(device)
+                            batch_ds_sharp = batch_ds.pow(1.0 / HYBRID_TEMP)
+                            batch_ds_sharp = batch_ds_sharp / batch_ds_sharp.sum(dim=2, keepdim=True)
+
+                            flat_sharp = batch_ds_sharp.view(-1, M * C)
+                            batch_y = tr.y[seed_local]
+                            raw_margin = _margin_targets(flat_sharp, batch_y)
+                            target_soft = (raw_margin + 1.0) / 2.0
+
+                            pred_soft = torch.sigmoid(logits)
+                            loss_soft_elem = criterion_soft(pred_soft, target_soft)
+                            loss_soft = loss_soft_elem.mean(dim=1)
+
+                            per_sample = (HYBRID_ALPHA * loss_bin) + ((1.0 - HYBRID_ALPHA) * loss_soft)
+                            pred_for_ranking = logits
+                        elif gnn_loss_mode == "meta_labels_regression":
                             pred_for_loss = torch.tanh(logits)
                             target = train_margin[seed_local]
+                            per_elem = criterion_none(pred_for_loss, target)
+                            per_sample = per_elem.mean(dim=1)
                             pred_for_ranking = pred_for_loss
                         elif gnn_loss_mode == "meta_labels_soft_bce":
                             raw_margin = train_margin[seed_local]
+                            min_pos = int(getattr(self.args, "graph_meta_min_pos", 3))
+                            if min_pos > 0:
+                                topk_vals, _ = torch.topk(
+                                    raw_margin,
+                                    k=min(min_pos, raw_margin.size(1)),
+                                    dim=1,
+                                )
+                                thresholds = topk_vals[:, -1].unsqueeze(1)
+                                boost_val = 0.1
+                                raw_margin = torch.where(
+                                    (raw_margin >= thresholds) & (raw_margin < boost_val),
+                                    raw_margin.new_tensor(boost_val),
+                                    raw_margin,
+                                )
                             soft_target = (raw_margin + 1.0) / 2.0
-                            pred_for_loss = logits
-                            target = soft_target
+                            per_elem = criterion_none(logits, soft_target)
+                            per_sample = per_elem.mean(dim=1)
                             pred_for_ranking = logits
                         else:
-                            pred_for_loss = logits
-                            target = train_meta
+                            per_elem = criterion_none(logits, train_meta)
+                            per_sample = per_elem.mean(dim=1)
                             pred_for_ranking = logits
-
-                        # Main Loss
-                        per_elem = criterion_none(pred_for_loss, target)
-                        per_sample = per_elem.mean(dim=1)
                         if sample_weights is not None:
                             sw = sample_weights[seed_local].to(per_sample.device)
                             per_sample = per_sample * sw
@@ -1151,24 +1175,57 @@ class clientDES(Client):
                     logits = gnn_model(train_graph)[train_mask]
                     train_meta = tr.meta
 
-                    # --- LOSS LOGIC FIX ---
-                    if gnn_loss_mode == "meta_labels_regression":
+                    # --- Loss logic ---
+                    if gnn_loss_mode == "hybrid_distillation":
+                        target_binary = train_meta
+                        loss_bin_elem = criterion_none(logits, target_binary)
+                        loss_bin = loss_bin_elem.mean(dim=1)
+
+                        M = logits.size(1)
+                        C = int(self.args.num_classes)
+                        batch_ds = tr.ds.view(-1, M, C).to(device)
+                        batch_ds_sharp = batch_ds.pow(1.0 / HYBRID_TEMP)
+                        batch_ds_sharp = batch_ds_sharp / batch_ds_sharp.sum(dim=2, keepdim=True)
+
+                        flat_sharp = batch_ds_sharp.view(-1, M * C)
+                        raw_margin = _margin_targets(flat_sharp, tr.y)
+                        target_soft = (raw_margin + 1.0) / 2.0
+
+                        pred_soft = torch.sigmoid(logits)
+                        loss_soft_elem = criterion_soft(pred_soft, target_soft)
+                        loss_soft = loss_soft_elem.mean(dim=1)
+
+                        per_sample = (HYBRID_ALPHA * loss_bin) + ((1.0 - HYBRID_ALPHA) * loss_soft)
+                        pred_for_ranking = logits
+                    elif gnn_loss_mode == "meta_labels_regression":
                         pred_for_loss = torch.tanh(logits)
-                        target = train_margin
+                        per_elem = criterion_none(pred_for_loss, train_margin)
+                        per_sample = per_elem.mean(dim=1)
                         pred_for_ranking = pred_for_loss
                     elif gnn_loss_mode == "meta_labels_soft_bce":
                         raw_margin = train_margin
+                        min_pos = int(getattr(self.args, "graph_meta_min_pos", 3))
+                        if min_pos > 0:
+                            topk_vals, _ = torch.topk(
+                                raw_margin,
+                                k=min(min_pos, raw_margin.size(1)),
+                                dim=1,
+                            )
+                            thresholds = topk_vals[:, -1].unsqueeze(1)
+                            boost_val = 0.1
+                            raw_margin = torch.where(
+                                (raw_margin >= thresholds) & (raw_margin < boost_val),
+                                raw_margin.new_tensor(boost_val),
+                                raw_margin,
+                            )
                         soft_target = (raw_margin + 1.0) / 2.0
-                        pred_for_loss = logits
-                        target = soft_target
+                        per_elem = criterion_none(logits, soft_target)
+                        per_sample = per_elem.mean(dim=1)
                         pred_for_ranking = logits
                     else:
-                        pred_for_loss = logits
-                        target = train_meta
+                        per_elem = criterion_none(logits, train_meta)
+                        per_sample = per_elem.mean(dim=1)
                         pred_for_ranking = logits
-
-                    per_elem = criterion_none(pred_for_loss, target)
-                    per_sample = per_elem.mean(dim=1)
                     if sample_weights is not None:
                         sw = sample_weights.to(per_sample.device)
                         per_sample = per_sample * sw
@@ -1227,6 +1284,8 @@ class clientDES(Client):
                 elif gnn_loss_mode == "meta_labels_soft_bce":
                     soft_target_val = (val_margin + 1.0) / 2.0
                     val_meta_loss = criterion_none(val_logits, soft_target_val).mean()
+                elif gnn_loss_mode == "hybrid_distillation":
+                    val_meta_loss = criterion_none(val_logits, val.meta).mean()
                 else:
                     val_meta_loss = criterion_none(val_logits, val.meta).mean()
 

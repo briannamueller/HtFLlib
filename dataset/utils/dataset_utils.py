@@ -137,6 +137,8 @@ def separate_data(
         Some changes are as follows:
         n_nets -> num_clients, n_class -> num_classes
         """
+        debug = os.environ.get("EXDIR_DEBUG", "0") == "1"
+        debug_every = int(os.environ.get("EXDIR_DEBUG_EVERY", "100"))
         C = labels_per_client
         if C < 1:
             raise ValueError("labels_per_client must be >= 1")
@@ -149,7 +151,9 @@ def separate_data(
         if actual_min_require < 1:
             raise ValueError
         clientidx_map = {}
+        assign_attempts = 0
         while min_size_per_label < actual_min_require:
+            assign_attempts += 1
             for k in range(num_classes):
                 clientidx_map[k] = []
             for i in range(num_clients):
@@ -157,6 +161,14 @@ def separate_data(
                 for k in labelidx:
                     clientidx_map[k].append(i)
             min_size_per_label = min([len(clientidx_map[k]) for k in range(num_classes)])
+            if debug and assign_attempts % debug_every == 0:
+                per_label = [len(clientidx_map[k]) for k in range(num_classes)]
+                print(
+                    f"[exdir][assign] attempt={assign_attempts} "
+                    f"min_size_per_label={min_size_per_label} "
+                    f"actual_min_require={actual_min_require} "
+                    f"min={min(per_label)} max={max(per_label)}"
+                )
 
         dataidx_map = {}
         y_train = dataset_label
@@ -169,7 +181,9 @@ def separate_data(
         print([len(clientidx_map[i]) for i in range(len(clientidx_map))])
 
         current_min_size = 0
+        alloc_attempts = 0
         while current_min_size < min_size_threshold:
+            alloc_attempts += 1
             idx_batch = [[] for _ in range(num_clients)]
             for k in range(K):
                 idx_k = np.where(y_train == k)[0]
@@ -195,6 +209,14 @@ def separate_data(
                     for idx_j, idx in zip(idx_batch, np.split(idx_k, proportions))
                 ]
                 current_min_size = min([len(idx_j) for idx_j in idx_batch])
+            if debug and alloc_attempts % debug_every == 0:
+                sizes = [len(idx_j) for idx_j in idx_batch]
+                print(
+                    f"[exdir][alloc] attempt={alloc_attempts} "
+                    f"current_min_size={current_min_size} "
+                    f"min_size_threshold={min_size_threshold} "
+                    f"min={min(sizes)} max={max(sizes)}"
+                )
 
         for j in range(num_clients):
             np.random.shuffle(idx_batch[j])

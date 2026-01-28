@@ -87,8 +87,10 @@ smp="${smp:-1}"
 base_tc="${base_tc:-100}"
 graph_tc="${graph_tc:-20}"
 meta_tc="${meta_tc:-1}"
-MAX_META_JOBS="${MAX_META_JOBS:-12}"           # 0 => unlimited
+MAX_META_JOBS="${MAX_META_JOBS:-7}"           # 0 => unlimited
 META_CHECK_INTERVAL="${META_CHECK_INTERVAL:-60}"  # seconds between qstat poll
+SUBMIT_PENDING_ONLY="${SUBMIT_PENDING_ONLY:-1}"   # 1 => submit only pending task IDs
+RECONCILE_MARKERS="${RECONCILE_MARKERS:-1}"       # 1 => create missing *_DONE.marker from outputs
 
 # Meta modes
 use_meta_grid="${use_meta_grid:-1}"      # PRIMARY
@@ -345,6 +347,8 @@ echo "[submit_all] NC=${NC} NUM_MODELS=${NUM_MODELS}"
 echo "[submit_all] use_meta_sweeps=${use_meta_sweeps} use_meta_grid=${use_meta_grid}"
 echo "[submit_all] single_default_configs=${single_default_configs}"
 echo "[submit_all] WANDB_PROJECT=${WANDB_PROJECT} WANDB_ENTITY=${WANDB_ENTITY}"
+echo "[submit_all] Cancel this run:"
+echo "  ACTION=cancel RUN_DIR=${RUN_DIR} bash run_pipeline.sh"
 
 # -----------------------------------------------------------------------------
 # 2) Plan configs + sync markers (your make_phase_configs.py interface)
@@ -374,6 +378,75 @@ n_gnn="$(wc -l < "${GNN_CFG}" | tr -d ' ')"
 n_pae="$(wc -l < "${PAE_CFG}" | tr -d ' ')"
 
 echo "[submit_all] n_base=${n_base} n_graph=${n_graph} n_gnn=${n_gnn} n_pae=${n_pae}"
+
+get_num_clients_from_args() {
+  local args="${COMMON_ARGS}"
+  local nc=""
+  if [[ "${args}" =~ (^|[[:space:]])-nc[[:space:]]+([0-9]+) ]]; then
+    nc="${BASH_REMATCH[2]}"
+  elif [[ "${args}" =~ (^|[[:space:]])--num-clients[[:space:]]+([0-9]+) ]]; then
+    nc="${BASH_REMATCH[2]}"
+  fi
+  echo "${nc:-0}"
+}
+
+reconcile_graph_markers() {
+  local num_clients
+  num_clients="$(get_num_clients_from_args)"
+  if [[ "${num_clients}" -le 0 ]]; then
+    echo "[reconcile] num_clients not found in COMMON_ARGS; skipping graph marker reconciliation."
+    return
+  fi
+  for g in $(seq 1 "${n_graph}"); do
+    local g_fp
+    g_fp="$(sed -n "${g}p" "${GRAPH_IDS}")"
+    for b in $(seq 1 "${n_base}"); do
+      local b_fp dir marker ok
+      b_fp="$(sed -n "${b}p" "${BASE_IDS}")"
+      marker="${ckpt_root}/graphs/base[${b_fp}]_graph[${g_fp}]_DONE.marker"
+      [[ -f "${marker}" ]] && continue
+      dir="${ckpt_root}/graphs/base[${b_fp}]_graph[${g_fp}]"
+      [[ -d "${dir}" ]] || continue
+      ok=1
+      for cid in $(seq 0 $((num_clients - 1))); do
+        [[ -f "${dir}/Client_${cid}_graph_train_val.pt" ]] || { ok=0; break; }
+        [[ -f "${dir}/Client_${cid}_graph_train_test.pt" ]] || { ok=0; break; }
+      done
+      if [[ "${ok}" -eq 1 ]]; then
+        touch "${marker}"
+        echo "[reconcile] graph marker created: ${marker}"
+      fi
+    done
+  done
+}
+
+reconcile_meta_markers() {
+  for g in $(seq 1 "${n_graph}"); do
+    local g_fp
+    g_fp="$(sed -n "${g}p" "${GRAPH_IDS}")"
+    for k in $(seq 1 "${n_gnn}"); do
+      local k_fp
+      k_fp="$(sed -n "${k}p" "${GNN_IDS}")"
+      for b in $(seq 1 "${n_base}"); do
+        local b_fp dir marker
+        b_fp="$(sed -n "${b}p" "${BASE_IDS}")"
+        marker="${ckpt_root}/gnn/base[${b_fp}]_graph[${g_fp}]_gnn[${k_fp}]_DONE.marker"
+        [[ -f "${marker}" ]] && continue
+        dir="${ckpt_root}/gnn/base[${b_fp}]_graph[${g_fp}]_gnn[${k_fp}]"
+        if [[ -f "${dir}/results.csv" ]]; then
+          touch "${marker}"
+          echo "[reconcile] meta marker created: ${marker}"
+        fi
+      done
+    done
+  done
+}
+
+if [[ "${RECONCILE_MARKERS}" -eq 1 ]]; then
+  echo "[submit_all] Reconciling markers from outputs..."
+  reconcile_graph_markers
+  reconcile_meta_markers
+fi
 
 # -----------------------------------------------------------------------------
 # Helpers: build lists of base_idx that are NOT complete (by markers)
@@ -441,7 +514,12 @@ if phase_enabled 1; then
   if [[ -n "${base_tlist_pending}" ]]; then
     echo "[submit_all] BASE tasks pending (by marker): ${base_tlist_pending}"
     base_range="1-${n_base}"
-    echo "[submit_all] Submitting BASE array over full range: ${base_range}"
+    if [[ "${SUBMIT_PENDING_ONLY}" -eq 1 ]]; then
+      base_range="${base_tlist_pending}"
+      echo "[submit_all] Submitting BASE array over pending range: ${base_range}"
+    else
+      echo "[submit_all] Submitting BASE array over full range: ${base_range}"
+    fi
     base_jobid="$(
       qsub -terse -N "des_base_${EXP_FAMILY}" -cwd -j y \
         -q "${queue}" -pe smp "${base_smp}" -l ${base_gpu_req},h_rt=${hrt} \
@@ -481,7 +559,12 @@ if phase_enabled 2 && [[ "${PIPELINE_ALGO}" == "FedDES" ]]; then
 
     graph_range="1-${n_base}"
     echo "[submit_all] GRAPH g=${g} tasks pending (by marker): ${graph_tlist_pending}"
-    echo "[submit_all] Submitting GRAPH g=${g} array over full range: ${graph_range}"
+    if [[ "${SUBMIT_PENDING_ONLY}" -eq 1 ]]; then
+      graph_range="${graph_tlist_pending}"
+      echo "[submit_all] Submitting GRAPH g=${g} array over pending range: ${graph_range}"
+    else
+      echo "[submit_all] Submitting GRAPH g=${g} array over full range: ${graph_range}"
+    fi
     gjob="$(
       qsub -terse -N "des_graph_${EXP_FAMILY}_g${g}" -cwd -j y \
         -q "${queue}" -pe smp "${smp}" -l ${gpu_req},h_rt=${hrt} \
@@ -521,7 +604,12 @@ if phase_enabled 2 && [[ "${PIPELINE_ALGO}" == "FedPAE" ]]; then
 
     pae_range="1-${n_base}"
     echo "[submit_all] PAE p=${p} tasks pending (by marker): ${pae_tlist_pending}"
-    echo "[submit_all] Submitting PAE p=${p} array over full range: ${pae_range}"
+    if [[ "${SUBMIT_PENDING_ONLY}" -eq 1 ]]; then
+      pae_range="${pae_tlist_pending}"
+      echo "[submit_all] Submitting PAE p=${p} array over pending range: ${pae_range}"
+    else
+      echo "[submit_all] Submitting PAE p=${p} array over full range: ${pae_range}"
+    fi
     pjob="$(
       qsub -terse -N "pae_${EXP_FAMILY}_p${p}" -cwd -j y \
         -q "${queue}" -pe smp "${smp}" -l ${gpu_req},h_rt=${hrt} \
@@ -715,7 +803,12 @@ if [[ "${use_meta_grid}" -eq 1 && "${PIPELINE_ALGO}" == "FedDES" ]]; then
 
         meta_range="1-${n_base}"
         echo "[submit_all] META grid g=${g} k=${k} tasks pending (by marker): ${meta_tlist_pending}"
-        echo "[submit_all] Submitting META grid g=${g} k=${k} array over full range: ${meta_range}"
+        if [[ "${SUBMIT_PENDING_ONLY}" -eq 1 ]]; then
+          meta_range="${meta_tlist_pending}"
+          echo "[submit_all] Submitting META grid g=${g} k=${k} array over pending range: ${meta_range}"
+        else
+          echo "[submit_all] Submitting META grid g=${g} k=${k} array over full range: ${meta_range}"
+        fi
 
         wait_for_meta_slot
         mgrid_job="$(
@@ -741,5 +834,3 @@ echo "[submit_all] Done."
 echo "[submit_all] Logs: ${LOG_DIR}"
 echo "[submit_all] Job list: ${JOBS_TSV}"
 echo "[submit_all] Sweep list: ${SWEEPS_TSV}"
-echo "[submit_all] Cancel this run:"
-echo "  ACTION=cancel RUN_DIR=${RUN_DIR} bash run_pipeline.sh"
