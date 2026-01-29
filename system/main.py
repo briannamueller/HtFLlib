@@ -122,6 +122,17 @@ def run(args):
 
     print(f"[FedDES][Main] Starting run with phase={getattr(args, 'phase', None)}, algorithm={args.algorithm}, dataset={args.dataset}")
 
+    # Phase 3 W&B setup must happen BEFORE server/clients are created so IDs are consistent.
+    if (
+        args.algorithm == "FedDES"
+        and int(getattr(args, "phase", 0)) == 3
+    ):
+        try:
+            from des.wandb_utils import setup_phase3_wandb
+            setup_phase3_wandb(args)
+        except Exception as e:
+            print(f"[FedDES][Main][warn] phase3 wandb setup failed: {e}")
+
     for i in range(args.prev, args.times):
         print(f"\n============= Running time: {i}th =============")
         print("Creating server and clients ...")
@@ -555,6 +566,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--graph_meta_min_pos', type=int, default=3)
     parser.add_argument('--graph_sample_node_feats', type=str, default="embedding_mean")
     parser.add_argument('--graph_drop_disconnected_cls', type=str2bool, default=False)
+    parser.add_argument('--graph_clf_div_emb', type=str2bool, default=False,
+                        help="If true, append classifier diversity embeddings to classifier node features.")
     parser.add_argument('--gnn_arch', type=str, default="gat")
     parser.add_argument('--gnn_heterogenous', type=str2bool, default=False)
     parser.add_argument('--gnn_hidden_dim', type=int, default=128)

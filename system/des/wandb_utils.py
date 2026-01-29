@@ -597,7 +597,9 @@ def log_graph_stats_to_wandb(
 def _collect_meta_selection_rows(clients: List[Any]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for client in clients:
-        json_path = Path(client.graph_outputs_dir) / client.role / "plots" / "meta_selection.json"
+        json_path = Path(getattr(client, "gnn_outputs_dir", "")) / "clients" / client.role / "meta_selection.json"
+        if not json_path.exists():
+            json_path = Path(client.graph_outputs_dir) / client.role / "plots" / "meta_selection.json"
         if not json_path.exists():
             continue
         try:
@@ -677,9 +679,11 @@ def _log_phase3_saved_plots(clients: List[Any], run_name: str) -> None:
     run = wandb.run
     for metric in metrics:
         for client in clients:
-            metric_root = Path(client.graph_outputs_dir) / client.role / "phase3_plots" / metric
+            metric_root = Path(getattr(client, "gnn_outputs_dir", "")) / "clients" / client.role / "plots" / metric
             if not metric_root.exists():
-                continue
+                metric_root = Path(client.graph_outputs_dir) / client.role / "phase3_plots" / metric
+                if not metric_root.exists():
+                    continue
             if metric == "support":
                 for class_dir in sorted(metric_root.iterdir()):
                     if not class_dir.is_dir():

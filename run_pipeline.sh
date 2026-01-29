@@ -87,7 +87,7 @@ smp="${smp:-1}"
 base_tc="${base_tc:-100}"
 graph_tc="${graph_tc:-20}"
 meta_tc="${meta_tc:-1}"
-MAX_META_JOBS="${MAX_META_JOBS:-7}"           # 0 => unlimited
+MAX_META_JOBS="${MAX_META_JOBS:-5}"           # 0 => unlimited
 META_CHECK_INTERVAL="${META_CHECK_INTERVAL:-60}"  # seconds between qstat poll
 SUBMIT_PENDING_ONLY="${SUBMIT_PENDING_ONLY:-1}"   # 1 => submit only pending task IDs
 RECONCILE_MARKERS="${RECONCILE_MARKERS:-1}"       # 1 => create missing *_DONE.marker from outputs

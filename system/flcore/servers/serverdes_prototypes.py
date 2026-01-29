@@ -139,6 +139,12 @@ class FedDES(Server):
             #   - syncing final wandb.config (with any overrides) back into self.args
             log_to_wandb = setup_phase3_wandb(self.args)
 
+            # Sync any W&B overrides into clients before deriving IDs/paths.
+            for client in self.clients:
+                client.args = self.args
+                if hasattr(client, "_refresh_config_ids_and_dirs"):
+                    client._refresh_config_ids_and_dirs()
+
             # Derive IDs AFTER any W&B overrides, so gnn_id reflects the true params used.
             base_id, graph_id, gnn_id = derive_config_ids(self.args)
             gnn_alias = f"base[{base_id}]_graph[{graph_id}]_gnn[{gnn_id}]"

@@ -120,10 +120,11 @@ class clientDES(Client):
         self.gnn_dir = args.ckpt_root / "gnn" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]_gnn[{self.gnn_config_id}]"
         self.base_outputs_dir = args.outputs_root / "base_clf" /  f"base[{self.base_config_id}]"
         self.graph_outputs_dir = args.outputs_root / "graphs" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]"
+        self.gnn_outputs_dir = args.outputs_root / "gnn" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]_gnn[{self.gnn_config_id}]"
 
         for dir in [self.base_dir, self.graph_dir, self.gnn_dir]:
             dir.mkdir(parents=True, exist_ok=True)
-        for dir in [self.base_outputs_dir, self.graph_outputs_dir]:
+        for dir in [self.base_outputs_dir, self.graph_outputs_dir, self.gnn_outputs_dir]:
             dir.mkdir(parents=True, exist_ok=True)
 
         self._base_train_loader = None
@@ -139,6 +140,20 @@ class clientDES(Client):
         ]
         statuses = {str(p): p.exists() for p in expected}
         return all(statuses.values()) if expected else True
+
+    def _refresh_config_ids_and_dirs(self) -> None:
+        self.base_config_id, self.graph_config_id, self.gnn_config_id = derive_config_ids(self.args)
+        self.base_dir = self.args.ckpt_root / "base_clf" /  f"base[{self.base_config_id}]"
+        self.graph_dir = self.args.ckpt_root / "graphs" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]"
+        self.gnn_dir = self.args.ckpt_root / "gnn" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]_gnn[{self.gnn_config_id}]"
+        self.base_outputs_dir = self.args.outputs_root / "base_clf" /  f"base[{self.base_config_id}]"
+        self.graph_outputs_dir = self.args.outputs_root / "graphs" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]"
+        self.gnn_outputs_dir = self.args.outputs_root / "gnn" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]_gnn[{self.gnn_config_id}]"
+
+        for dir in [self.base_dir, self.graph_dir, self.gnn_dir]:
+            dir.mkdir(parents=True, exist_ok=True)
+        for dir in [self.base_outputs_dir, self.graph_outputs_dir, self.gnn_outputs_dir]:
+            dir.mkdir(parents=True, exist_ok=True)
 
     def _sync_single_model_from_multi_base(self) -> None:
         args_dict = dict(vars(self.args))
@@ -1592,10 +1607,18 @@ class clientDES(Client):
         selection = selection_matrix.detach().cpu().numpy()
         labels_np = target_labels.detach().cpu().numpy()
         total_samples = labels_np.size
+        client_dir = self.gnn_outputs_dir / "clients" / self.role
+        summary_path = client_dir / "meta_selection.json"
+        print(
+            f"[FedDES][Client {self.role}][diag] meta_selection target={summary_path} "
+            f"selection_shape={selection.shape} labels_shape={labels_np.shape} total_samples={int(total_samples)}"
+        )
 
         summary = {"client": self.role, "combination_mode": combination_mode, "total_samples": int(total_samples), "rows": []}
         unique_labels = np.unique(labels_np)
-        if unique_labels.size == 0 or selection.size == 0: return
+        if unique_labels.size == 0 or selection.size == 0:
+            print(f"[FedDES][Client {self.role}][diag] meta_selection skipped: empty labels or selection.")
+            return
 
         clf_keys = getattr(self, "_active_clf_keys", None) or self.global_clf_keys
         for cls in unique_labels:
@@ -1624,12 +1647,12 @@ class clientDES(Client):
                 "entries": entries,
             })
 
-        plots_dir = self.graph_outputs_dir / self.role / "plots"
+        plots_dir = client_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = plots_dir / "meta_selection.json"
+        summary_path = client_dir / "meta_selection.json"
         with open(summary_path, "w") as f: json.dump(summary, f, indent=2)
 
-        support_root = self.graph_outputs_dir / self.role / "phase3_plots" / "support"
+        support_root = plots_dir / "support"
         support_root.mkdir(parents=True, exist_ok=True)
 
         for row in summary["rows"]:
@@ -1660,12 +1683,16 @@ class clientDES(Client):
 
     def _save_phase3_line_plots(self) -> None:
         if not self.meta_history: return
-        history_dir = self.graph_outputs_dir / self.role
+        history_dir = self.gnn_outputs_dir / "clients" / self.role
         history_dir.mkdir(parents=True, exist_ok=True)
         history_path = history_dir / "meta_history.json"
+        print(
+            f"[FedDES][Client {self.role}][diag] meta_history target={history_path} "
+            f"rows={len(self.meta_history)}"
+        )
         with open(history_path, "w") as f: json.dump(self.meta_history, f, indent=2)
 
-        plots_root = self.graph_outputs_dir / self.role / "phase3_plots"
+        plots_root = self.gnn_outputs_dir / "clients" / self.role / "plots"
         metrics = [
             ("train_loss", "train_meta_loss", "Train meta loss", "train meta loss", None),
             ("val_loss", "val_loss", "Validation loss", "val loss", None),

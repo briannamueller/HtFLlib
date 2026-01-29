@@ -1,7 +1,7 @@
 
 pipeline:
   data_partition_args:
-    alpha: 1
+    alpha: 10
     C: 5
     partition: exdir
     min_size: 1
@@ -23,6 +23,12 @@ pipeline:
       data: Cifar10
       model_family: HtFE-img-5
       num_classes: 10
+      feature_dim: 256
+      NUM_MODELS: 5
+    Cifar100:
+      data: Cifar100
+      model_family: HtFE-img-5
+      num_classes: 100
       feature_dim: 256
       NUM_MODELS: 5
     eicu_defaults: &eicu_defaults
@@ -87,6 +93,7 @@ graph_configs:
   # Defaults / common settings
   graph_sample_node_feats: embedding_mean   # options: ds | embedding_mean | embedding_concat | encoder | hybrid
   graph_cs_mode: balanced_acc:logloss       # format: score:tie (tie can be none)
+  graph_clf_div_emb: false
 
   # Search space for graph construction (cartesian product)
   sweep:
@@ -118,7 +125,7 @@ gnn_configs:
   sweep:
     gnn_heterogenous: [true]
     gnn_hidden_dim: [32, 64]
-    gnn_heads: [4, 8]
+    gnn_heads: [4]
     gnn_layers: [2]
     gnn_lr: [0.005]
     gnn_es_metric: [val_loss]

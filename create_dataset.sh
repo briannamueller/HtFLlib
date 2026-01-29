@@ -37,6 +37,10 @@ case "${DATASET_TYPE,,}" in
     FAMILY="Cifar10"
     GENERATOR="generate_Cifar10.py"
     ;;
+  cifar100)
+    FAMILY="Cifar100"
+    GENERATOR="generate_Cifar100.py"
+    ;;
   eicu*)
     FAMILY="eicu"
     GENERATOR="generate_eICU.py"

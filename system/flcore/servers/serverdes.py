@@ -133,11 +133,8 @@ class FedDES(Server):
         # Phase 3: Train meta-learner
         # -----------------------------
         if phase == 3:
-            # Handles:
-            #   - deciding whether to log to W&B
-            #   - wandb.init(config=defaults_from_args) if needed
-            #   - syncing final wandb.config (with any overrides) back into self.args
-            log_to_wandb = setup_phase3_wandb(self.args)
+            # W&B init (and any overrides) are handled in main.py before server/clients are created.
+            log_to_wandb = (wandb is not None) and (wandb.run is not None)
 
             # Derive IDs AFTER any W&B overrides, so gnn_id reflects the true params used.
             base_id, graph_id, gnn_id = derive_config_ids(self.args)

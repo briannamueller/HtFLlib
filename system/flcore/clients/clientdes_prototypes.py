@@ -152,6 +152,20 @@ class clientDESPrototypes(Client):
         ok = all(statuses.values()) if expected else True
         return ok
 
+    def _refresh_config_ids_and_dirs(self) -> None:
+        self.base_config_id, self.graph_config_id, self.gnn_config_id = derive_config_ids(self.args)
+        self.base_dir = self.args.ckpt_root / "base_clf" /  f"base[{self.base_config_id}]"
+        self.graph_dir = self.args.ckpt_root / "graphs" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]"
+        self.gnn_dir = self.args.ckpt_root / "gnn" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]_gnn[{self.gnn_config_id}]"
+        self.base_outputs_dir = self.args.outputs_root / "base_clf" /  f"base[{self.base_config_id}]"
+        self.graph_outputs_dir = self.args.outputs_root / "graphs" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]"
+        self.gnn_outputs_dir = self.args.outputs_root / "gnn" / f"base[{self.base_config_id}]_graph[{self.graph_config_id}]_gnn[{self.gnn_config_id}]"
+
+        for dir in [self.base_dir, self.graph_dir, self.gnn_dir]:
+            dir.mkdir(parents=True, exist_ok=True)
+        for dir in [self.base_outputs_dir, self.graph_outputs_dir, self.gnn_outputs_dir]:
+            dir.mkdir(parents=True, exist_ok=True)
+
     def _sync_single_model_from_multi_base(self) -> None:
         args_dict = dict(vars(self.args))
         args_dict["base_single_model"] = False

@@ -801,8 +801,10 @@ def build_train_eval_graph(
     margins = true_class_probs.squeeze(-1) - max_rival_probs
     per_class_avg_margin = masked_mean(margins)
 
-    # --- NEW: Calculate Diversity Embeddings ---
-    div_feats = get_diversity_embeddings(tr_meta_np, n_components=8)
+    # --- NEW: Calculate Diversity Embeddings (optional) ---
+    use_div_emb = bool(getattr(self.args, "graph_clf_div_emb", False))
+    if use_div_emb:
+        div_feats = get_diversity_embeddings(tr_meta_np, n_components=8)
 
     se = np.sqrt(per_class_hard_recall * (1.0 - per_class_hard_recall) / safe_counts)
     se = np.where(has_support[:, None], se, 0.0).astype(np.float32)
@@ -841,7 +843,10 @@ def build_train_eval_graph(
                 if 0 <= int(cls) < self.args.num_classes:
                     dist_feats[idx, int(cls)] = float(cnt) / total
 
-    clf_x = torch.from_numpy(np.concatenate([clf_x_stats, dist_feats, div_feats], axis=1)).float()
+    clf_parts = [clf_x_stats, dist_feats]
+    if use_div_emb:
+        clf_parts.append(div_feats)
+    clf_x = torch.from_numpy(np.concatenate(clf_parts, axis=1)).float()
 
     data = HeteroData()
     data['sample'].x = combined_feats.float()
